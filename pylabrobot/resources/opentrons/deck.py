@@ -18,6 +18,7 @@ class OTDeck(Deck):
     origin: Coordinate = Coordinate(0, 0, 0),
     with_trash: bool = True,
     name: str = "deck",
+    category: str = "deck",
   ):
     # size_z is probably wrong
 
