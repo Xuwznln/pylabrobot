@@ -8,3 +8,4 @@ warnings.warn(
 )
 
 from pylabrobot.legacy.liquid_handling.backends import *  # noqa: F401,F403,E402
+from .rviz_backend import LiquidHandlerRvizBackend
