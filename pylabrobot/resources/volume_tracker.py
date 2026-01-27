@@ -8,7 +8,7 @@ from pylabrobot.resources.errors import (
   TooLittleVolumeError,
 )
 from pylabrobot.resources.liquid import Liquid
-from pylabrobot.serializer import SerializableMixin
+from pylabrobot.serializer import SerializableMixin, deserialize, serialize
 
 this = sys.modules[__name__]
 this.volume_tracking_enabled = False  # type: ignore
@@ -157,18 +157,18 @@ class VolumeTracker(SerializableMixin):
   def serialize(self) -> dict:
     """Serialize the volume tracker."""
     return {
-      "volume": self.volume,
-      "pending_volume": self.pending_volume,
+      "volume": serialize(self.volume),
+      "pending_volume": serialize(self.pending_volume),
       "thing": self.thing,
-      "max_volume": self.max_volume,
+      "max_volume": serialize(self.max_volume),
     }
 
   def load_state(self, state: dict) -> None:
     """Load the state of the volume tracker."""
-    self.volume = state["volume"]
-    self.pending_volume = state["pending_volume"]
+    self.volume = deserialize(state["volume"])
+    self.pending_volume = deserialize(state["pending_volume"])
     self.thing = state["thing"]
-    self.max_volume = state["max_volume"]
+    self.max_volume = deserialize(state["max_volume"])
 
   def register_callback(self, callback: VolumeTrackerCallback) -> None:
     self._callback = callback
