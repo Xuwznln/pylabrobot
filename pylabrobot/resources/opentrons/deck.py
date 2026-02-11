@@ -148,8 +148,11 @@ class OTDeck(Deck):
       raise ValueError("slot must be between 1 and 12")
 
     holder = self._slot_holders[slot - 1]
-    if holder.resource is not None:
-      raise ValueError(f"Spot {slot} is already occupied")
+    existing = holder.resource
+    if existing is not None:
+      if existing.name not in ["trash_container", "trash"]:
+        raise ValueError(f"Spot {slot} is already occupied")
+      holder.unassign_child_resource(existing)
 
     holder.assign_child_resource(resource)
 
