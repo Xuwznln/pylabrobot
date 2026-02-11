@@ -140,13 +140,13 @@ def ot_definition_to_resource(
           wells.append(well)
         elif display_category == "tipRack":
           # closure
-          def make_tip(tip_name: str) -> Tip:
+          def make_tip(name: str) -> Tip:
             return Tip(
               total_tip_length=data["parameters"]["tipLength"],
               has_filter="Filter" in data["metadata"]["displayName"],
               maximal_volume=volume_from_name(data["metadata"]["displayName"]),
               fitting_depth=data["parameters"]["tipOverlap"],
-              name=tip_name,
+              name=name,
             )
 
           tip_spot = TipSpot(
