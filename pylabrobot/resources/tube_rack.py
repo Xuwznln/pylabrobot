@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from typing import Dict, Optional, Union, cast
 
 from .coordinate import Coordinate
@@ -17,6 +18,8 @@ class TubeRack(ItemizedResource[ResourceHolder]):
     size_y: float,
     size_z: float,
     ordered_items: Optional[Dict[str, ResourceHolder]] = None,
+    ordering: Optional[OrderedDict] = None,
+    category: Optional[str] = None,
     model: Optional[str] = None,
   ):
     """Initialize a TubeRack resource.
@@ -26,7 +29,9 @@ class TubeRack(ItemizedResource[ResourceHolder]):
       size_x: Size of the tube rack in the x direction.
       size_y: Size of the tube rack in the y direction.
       size_z: Size of the tube rack in the z direction.
-      items: List of lists of wells.
+      ordered_items: Dict of identifier to ResourceHolder. Mutually exclusive with ``ordering``.
+      ordering: Dict of identifier to child name. Mutually exclusive with ``ordered_items``.
+      category: Category of the tube rack.
       model: Model of the tube rack.
     """
     super().__init__(
@@ -35,6 +40,8 @@ class TubeRack(ItemizedResource[ResourceHolder]):
       size_y=size_y,
       size_z=size_z,
       ordered_items=ordered_items,
+      ordering=ordering,
+      category=category,
       model=model,
     )
 
