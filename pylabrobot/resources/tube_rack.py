@@ -75,4 +75,4 @@ class TubeRack(ItemizedResource[ResourceHolder]):
       The tube at the given position, or None if there is no tube at that position.
     """
     holder = self.get_item(key)
-    return holder.resource if holder.resource is not None else holder  # need fix
+    return holder.resource if hasattr(holder, "resource") and holder.resource is not None else holder  # need fix
