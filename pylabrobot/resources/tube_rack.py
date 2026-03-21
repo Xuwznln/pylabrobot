@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, cast
 
 from .coordinate import Coordinate
 from .itemized_resource import ItemizedResource
@@ -75,4 +75,6 @@ class TubeRack(ItemizedResource[ResourceHolder]):
       The tube at the given position, or None if there is no tube at that position.
     """
     holder = self.get_item(key)
-    return holder.resource if hasattr(holder, "resource") and holder.resource is not None else None
+    if hasattr(holder, "resource") and holder.resource is not None:
+      return cast(Tube, holder.resource)
+    return None

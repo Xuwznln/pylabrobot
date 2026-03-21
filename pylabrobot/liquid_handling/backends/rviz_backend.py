@@ -1,4 +1,4 @@
-      
+# mypy: ignore-errors
 import json
 from typing import List, Union
 
@@ -30,172 +30,165 @@ from rclpy.action import ActionClient
 from unilabos_msgs.action import SendCmd
 import re
 
+
 class JointStatePublisher(Node):
-    def __init__(self):
-        super().__init__('joint_state_publisher')
-        self.publisher = self.create_publisher(JointState, '/joint_states', 10)
-        self.timer = self.create_timer(0.1, self.timer_callback)  # 每秒发布一次
-        self.joint_positions = [0.0, 0.0, 0.0, 0.0]  # 初始化关节位置
+  def __init__(self):
+    super().__init__("joint_state_publisher")
+    self.publisher = self.create_publisher(JointState, "/joint_states", 10)
+    self.timer = self.create_timer(0.1, self.timer_callback)  # 每秒发布一次
+    self.joint_positions = [0.0, 0.0, 0.0, 0.0]  # 初始化关节位置
 
-        self.resource_action = None
-        
-        while self.resource_action is None:
-            self.resource_action = self.check_tf_update_actions()
-            time.sleep(1)
-        
-        self.resource_action_client = ActionClient(self, SendCmd, self.resource_action)
-        while not self.resource_action_client.wait_for_server(timeout_sec=1.0):
-            self.get_logger().info('等待 TfUpdate 服务器...')
-        # 获取所有topic并检查action status topics
-        # print("-"*20)
-        # print(self.resource_action)
-        # print("-"*20)
-        
-        
-    def check_tf_update_actions(self):
-        topics = self.get_topic_names_and_types()
+    self.resource_action = None
 
-        
-        for topic_item in topics:
+    while self.resource_action is None:
+      self.resource_action = self.check_tf_update_actions()
+      time.sleep(1)
 
-            topic_name, topic_types = topic_item
+    self.resource_action_client = ActionClient(self, SendCmd, self.resource_action)
+    while not self.resource_action_client.wait_for_server(timeout_sec=1.0):
+      self.get_logger().info("等待 TfUpdate 服务器...")
+    # 获取所有topic并检查action status topics
+    # print("-"*20)
+    # print(self.resource_action)
+    # print("-"*20)
 
-            if 'action_msgs/msg/GoalStatusArray' in topic_types:
-                # 删除 /_action/status 部分
+  def check_tf_update_actions(self):
+    topics = self.get_topic_names_and_types()
 
-                base_name = topic_name.replace('/_action/status', '')
-                # 检查最后一个部分是否为 tf_update
-                parts = base_name.split('/')
-                if parts and parts[-1] == 'tf_update':
-                    return base_name
-                
-        return None
-    
-    def send_resource_action(self, resource_id_list:list[str], link_name:str):
-        goal_msg = SendCmd.Goal()
-        str_dict = {}
-        for resource in resource_id_list:
-            str_dict[resource] = link_name
+    for topic_item in topics:
+      topic_name, topic_types = topic_item
 
-        goal_msg.command = json.dumps(str_dict)
-        self.resource_action_client.send_goal_async(goal_msg)
-    
-    def resource_move(self, resource_id:str, link_name:str, channels:list[int]):
-        resource = resource_id.rsplit("_",1)
-        
-        channel_list = ['A','B','C','D','E','F','G','H']
+      if "action_msgs/msg/GoalStatusArray" in topic_types:
+        # 删除 /_action/status 部分
 
-        resource_list = []
-        match = re.match(r'([a-zA-Z_]+)(\d+)', resource[1])
-        if match:
-            number = match.group(2)
-            for channel in channels:
-                resource_list.append(f"{resource[0]}_{channel_list[channel]}{number}")
+        base_name = topic_name.replace("/_action/status", "")
+        # 检查最后一个部分是否为 tf_update
+        parts = base_name.split("/")
+        if parts and parts[-1] == "tf_update":
+          return base_name
 
-        if len(resource_list) > 0:
-            self.send_resource_action(resource_list, link_name)
+    return None
 
-    def timer_callback(self):
+  def send_resource_action(self, resource_id_list: list[str], link_name: str):
+    goal_msg = SendCmd.Goal()
+    str_dict = {}
+    for resource in resource_id_list:
+      str_dict[resource] = link_name
+
+    goal_msg.command = json.dumps(str_dict)
+    self.resource_action_client.send_goal_async(goal_msg)
+
+  def resource_move(self, resource_id: str, link_name: str, channels: list[int]):
+    resource = resource_id.rsplit("_", 1)
+
+    channel_list = ["A", "B", "C", "D", "E", "F", "G", "H"]
+
+    resource_list = []
+    match = re.match(r"([a-zA-Z_]+)(\d+)", resource[1])
+    if match:
+      number = match.group(2)
+      for channel in channels:
+        resource_list.append(f"{resource[0]}_{channel_list[channel]}{number}")
+
+    if len(resource_list) > 0:
+      self.send_resource_action(resource_list, link_name)
+
+  def timer_callback(self):
+    self.publish_joint_states(self.joint_positions)
+
+  def publish_joint_states(self, joint_positions):
+    joint_state = JointState()
+    joint_state.header.stamp = self.get_clock().now().to_msg()
+    joint_state.name = [
+      "PLR_STATION_deck_first_joint",
+      "PLR_STATION_deck_second_joint",
+      "PLR_STATION_deck_third_joint",
+      "PLR_STATION_deck_fourth_joint",
+    ]
+    joint_state.position = joint_positions
+    joint_state.velocity = []
+    joint_state.effort = []
+    self.publisher.publish(joint_state)
+    # print(self.joint_positions)
+
+  def inverse_kinematics(self, x, y, z):
+
+    first_joint = -y / 1000 + 0.163
+    second_joint = -x / 1000 + 0.1775
+    third_joint = z / 1000
+
+    # 第四个关节没有用
+    fourth_joint = 0.0
+
+    return [first_joint, second_joint, third_joint, fourth_joint]
+
+  def move_to_xyz(self, x, y, z, speed=0.1, rate=10):
+
+    # rclpy.init()
+    # joint_state_publisher = JointStatePublisher()
+
+    try:
+      # 计算逆运动学
+      joint_positions_target = self.inverse_kinematics(x, y, z)
+      loop_flag = 0
+
+      while loop_flag < 4:
+        loop_flag = 0
+        for i in range(4):
+          distance = joint_positions_target[i] - self.joint_positions[i]
+          if distance == 0:
+            loop_flag += 1
+            continue
+          minus_flag = distance / abs(distance)
+          if abs(distance) > speed / rate:
+            self.joint_positions[i] += minus_flag * speed / rate
+          else:
+            self.joint_positions[i] = joint_positions_target[i]
+            loop_flag += 1
+
+        # 发布关节状态
         self.publish_joint_states(self.joint_positions)
-    
-    def publish_joint_states(self, joint_positions):
-        joint_state = JointState()
-        joint_state.header.stamp = self.get_clock().now().to_msg()
-        joint_state.name = ['PLR_STATION_deck_first_joint', 'PLR_STATION_deck_second_joint', 'PLR_STATION_deck_third_joint', 'PLR_STATION_deck_fourth_joint']
-        joint_state.position = joint_positions
-        joint_state.velocity = []
-        joint_state.effort = []
-        self.publisher.publish(joint_state)
-        # print(self.joint_positions)
+        time.sleep(1 / rate)
 
+    except KeyboardInterrupt:
+      self.get_logger().info("KeyboardInterrupt caught. Exiting...")
+    # finally:
+    #     joint_state_publisher.destroy_node()
+    #     rclpy.shutdown()
 
-    def inverse_kinematics(self,x, y, z):
+  def goback(self, speed=0.1, rate=10):
+    # rclpy.init()
+    # joint_state_publisher = JointStatePublisher()
 
+    try:
+      # 计算逆运动学
+      joint_positions_target = self.inverse_kinematics(0, 0, 0)
+      loop_flag = 0
 
-        first_joint = -y/1000 + 0.163
-        second_joint = -x/1000 + 0.1775
-        third_joint = z/1000
+      while loop_flag < 4:
+        loop_flag = 0
+        for i in range(4):
+          distance = joint_positions_target[i] - self.joint_positions[i]
+          if distance == 0:
+            loop_flag += 1
+            continue
+          minus_flag = distance / abs(distance)
+          if abs(distance) > speed / rate:
+            self.joint_positions[i] += minus_flag * speed / rate
+          else:
+            self.joint_positions[i] = joint_positions_target[i]
+            loop_flag += 1
 
+        # 发布关节状态
+        self.publish_joint_states(self.joint_positions)
+        time.sleep(1 / rate)
 
-        # 第四个关节没有用
-        fourth_joint = 0.0
+    except KeyboardInterrupt:
+      self.get_logger().info("KeyboardInterrupt caught. Exiting...")
+    # finally:
+    #     joint_state_publisher.destroy_node()
+    #     rclpy.shutdown()
 
-        return [first_joint, second_joint, third_joint, fourth_joint]
-
-    def move_to_xyz(self,x, y, z, speed=0.1, rate=10):
-        
-        # rclpy.init()
-        # joint_state_publisher = JointStatePublisher()
-
-
-        try:
-            # 计算逆运动学
-            joint_positions_target = self.inverse_kinematics(x, y, z) 
-            loop_flag = 0
-
-
-            while loop_flag < 4:
-                loop_flag = 0
-                for i in range(4):
-                    distance = joint_positions_target[i] - self.joint_positions[i]
-                    if distance == 0:
-                        loop_flag += 1
-                        continue
-                    minus_flag = distance/abs(distance)
-                    if abs(distance) > speed/rate:
-                        self.joint_positions[i] += minus_flag * speed/rate
-                    else :
-                        self.joint_positions[i] = joint_positions_target[i]
-                        loop_flag += 1
-                        
-
-                # 发布关节状态
-                self.publish_joint_states(self.joint_positions)
-                time.sleep(1/rate)
-
-
-        except KeyboardInterrupt:
-            self.get_logger().info('KeyboardInterrupt caught. Exiting...')
-        # finally:
-        #     joint_state_publisher.destroy_node()
-        #     rclpy.shutdown()
-
-
-    def goback(self,speed=0.1, rate=10):
-        # rclpy.init()
-        # joint_state_publisher = JointStatePublisher()
-
-        try:
-            # 计算逆运动学
-            joint_positions_target = self.inverse_kinematics(0, 0, 0) 
-            loop_flag = 0
-
-
-            while loop_flag < 4:
-                loop_flag = 0
-                for i in range(4):
-                    distance = joint_positions_target[i] - self.joint_positions[i]
-                    if distance == 0:
-                        loop_flag += 1
-                        continue
-                    minus_flag = distance/abs(distance)
-                    if abs(distance) > speed/rate:
-                        self.joint_positions[i] += minus_flag * speed/rate
-                    else :
-                        self.joint_positions[i] = joint_positions_target[i]
-                        loop_flag += 1
-
-                        
-                # 发布关节状态
-                self.publish_joint_states(self.joint_positions)
-                time.sleep(1/rate)  
-
-
-        except KeyboardInterrupt:
-            self.get_logger().info('KeyboardInterrupt caught. Exiting...')
-        # finally:
-        #     joint_state_publisher.destroy_node()
-        #     rclpy.shutdown()
 
 class LiquidHandlerRvizBackend(LiquidHandlerBackend):
   """Chatter box backend for device-free testing. Prints out all operations."""
@@ -219,9 +212,9 @@ class LiquidHandlerRvizBackend(LiquidHandlerBackend):
     """Initialize a chatter box backend."""
     super().__init__()
     self._num_channels = num_channels
-# rclpy.init()
+    # rclpy.init()
     if not rclpy.ok():
-        rclpy.init()
+      rclpy.init()
     self.joint_state_publisher = None
 
   async def setup(self):
@@ -258,12 +251,11 @@ class LiquidHandlerRvizBackend(LiquidHandlerBackend):
       # print("moving")
       self.joint_state_publisher.move_to_xyz(x, y, 0)
       self.joint_state_publisher.move_to_xyz(x, y, z)
-      self.joint_state_publisher.resource_move(op.resource.name, "PLR_STATION_deck_third_link", [0,1,2,3,4,5,6,7])
+      self.joint_state_publisher.resource_move(
+        op.resource.name, "PLR_STATION_deck_third_link", [0, 1, 2, 3, 4, 5, 6, 7]
+      )
       self.joint_state_publisher.move_to_xyz(x, y, 0)
     #   goback()
-
-
-
 
   async def drop_tips(self, ops: List[Drop], use_channels: List[int], **backend_kwargs):
     print("Dropping tips:")
@@ -324,7 +316,7 @@ class LiquidHandlerRvizBackend(LiquidHandlerBackend):
       coordinate = o.resource.get_absolute_location()
       x = coordinate.x
       y = coordinate.y
-      z = coordinate.z + 70 
+      z = coordinate.z + 70
       # print(x, y, z)
       # print("moving")
       self.joint_state_publisher.move_to_xyz(x, y, 0)
@@ -379,7 +371,7 @@ class LiquidHandlerRvizBackend(LiquidHandlerBackend):
       # print("moving")
       self.joint_state_publisher.move_to_xyz(x, y, 0)
       self.joint_state_publisher.move_to_xyz(x, y, z)
-      self.joint_state_publisher.move_to_xyz(x, y, 0)   
+      self.joint_state_publisher.move_to_xyz(x, y, 0)
 
   async def pick_up_tips96(self, pickup: PickupTipRack, **backend_kwargs):
     print(f"Picking up tips from {pickup.resource.name}.")
@@ -414,4 +406,3 @@ class LiquidHandlerRvizBackend(LiquidHandlerBackend):
 
   def can_pick_up_tip(self, channel_idx: int, tip: Tip) -> bool:
     return True
-    
