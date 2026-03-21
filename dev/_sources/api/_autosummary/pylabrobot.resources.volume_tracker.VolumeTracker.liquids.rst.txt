@@ -1,0 +1,6 @@
+pylabrobot.resources.volume\_tracker.VolumeTracker.liquids
+==========================================================
+
+.. currentmodule:: pylabrobot.resources.volume_tracker
+
+.. autoproperty:: VolumeTracker.liquids
