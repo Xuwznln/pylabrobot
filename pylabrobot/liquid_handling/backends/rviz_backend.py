@@ -1,6 +1,14 @@
 # mypy: ignore-errors
 import json
+import re
+import time
 from typing import List, Union
+
+import rclpy
+from rclpy.action import ActionClient
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+from unilabos_msgs.action import SendCmd
 
 from pylabrobot.liquid_handling.backends.backend import (
   LiquidHandlerBackend,
@@ -21,14 +29,6 @@ from pylabrobot.liquid_handling.standard import (
   SingleChannelDispense,
 )
 from pylabrobot.resources import Resource, Tip
-
-import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import JointState
-import time
-from rclpy.action import ActionClient
-from unilabos_msgs.action import SendCmd
-import re
 
 
 class JointStatePublisher(Node):
