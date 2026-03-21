@@ -7,8 +7,7 @@ from pylabrobot.resources.errors import (
   TooLittleVolumeError,
 )
 from pylabrobot.resources.liquid import Liquid
-from pylabrobot.serializer import SerializableMixin
-from pylabrobot.serializer import deserialize, serialize
+from pylabrobot.serializer import SerializableMixin, deserialize, serialize
 
 this = sys.modules[__name__]
 this.volume_tracking_enabled = False  # type: ignore
