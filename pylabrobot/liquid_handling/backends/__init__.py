@@ -1,5 +1,8 @@
 from .backend import LiquidHandlerBackend
-from .rviz_backend import LiquidHandlerRvizBackend
+try:
+  from .rviz_backend import LiquidHandlerRvizBackend
+except ImportError:
+  pass
 from .chatterbox import LiquidHandlerChatterboxBackend
 from .chatterbox_backend import ChatterBoxBackend
 from .hamilton.STAR_backend import STAR, STARBackend

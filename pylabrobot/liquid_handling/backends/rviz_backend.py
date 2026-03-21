@@ -1,6 +1,6 @@
       
 import json
-from typing import List, Optional, Union
+from typing import List, Union
 
 from pylabrobot.liquid_handling.backends.backend import (
   LiquidHandlerBackend,
@@ -248,35 +248,8 @@ class LiquidHandlerRvizBackend(LiquidHandlerBackend):
 
   async def pick_up_tips(self, ops: List[Pickup], use_channels: List[int], **backend_kwargs):
     print("Picking up tips:")
-    # print(ops.tip)
-    header = (
-      f"{'pip#':<{LiquidHandlerRvizBackend._pip_length}} "
-      f"{'resource':<{LiquidHandlerRvizBackend._resource_length}} "
-      f"{'offset':<{LiquidHandlerRvizBackend._offset_length}} "
-      f"{'tip type':<{LiquidHandlerRvizBackend._tip_type_length}} "
-      f"{'max volume (µL)':<{LiquidHandlerRvizBackend._max_volume_length}} "
-      f"{'fitting depth (mm)':<{LiquidHandlerRvizBackend._fitting_depth_length}} "
-      f"{'tip length (mm)':<{LiquidHandlerRvizBackend._tip_length_length}} "
-      # f"{'pickup method':<{ChatterboxBackend._pickup_method_length}} "
-      f"{'filter':<{LiquidHandlerRvizBackend._filter_length}}"
-    )
-    # print(header)
 
     for op, channel in zip(ops, use_channels):
-      offset = f"{round(op.offset.x, 1)},{round(op.offset.y, 1)},{round(op.offset.z, 1)}"
-      row = (
-        f"  p{channel}: "
-        f"{op.resource.name[-30:]:<{LiquidHandlerRvizBackend._resource_length}} "
-        f"{offset:<{LiquidHandlerRvizBackend._offset_length}} "
-        f"{op.tip.__class__.__name__:<{LiquidHandlerRvizBackend._tip_type_length}} "
-        f"{op.tip.maximal_volume:<{LiquidHandlerRvizBackend._max_volume_length}} "
-        f"{op.tip.fitting_depth:<{LiquidHandlerRvizBackend._fitting_depth_length}} "
-        f"{op.tip.total_tip_length:<{LiquidHandlerRvizBackend._tip_length_length}} "
-        # f"{str(op.tip.pickup_method)[-20:]:<{ChatterboxBackend._pickup_method_length}} "
-        f"{'Yes' if op.tip.has_filter else 'No':<{LiquidHandlerRvizBackend._filter_length}}"
-      )
-      # print(row)
-      # print(op.resource.get_absolute_location())
       coordinate = op.resource.get_absolute_location()
       x = coordinate.x
       y = coordinate.y
@@ -294,34 +267,8 @@ class LiquidHandlerRvizBackend(LiquidHandlerBackend):
 
   async def drop_tips(self, ops: List[Drop], use_channels: List[int], **backend_kwargs):
     print("Dropping tips:")
-    header = (
-      f"{'pip#':<{LiquidHandlerRvizBackend._pip_length}} "
-      f"{'resource':<{LiquidHandlerRvizBackend._resource_length}} "
-      f"{'offset':<{LiquidHandlerRvizBackend._offset_length}} "
-      f"{'tip type':<{LiquidHandlerRvizBackend._tip_type_length}} "
-      f"{'max volume (µL)':<{LiquidHandlerRvizBackend._max_volume_length}} "
-      f"{'fitting depth (mm)':<{LiquidHandlerRvizBackend._fitting_depth_length}} "
-      f"{'tip length (mm)':<{LiquidHandlerRvizBackend._tip_length_length}} "
-      # f"{'pickup method':<{ChatterboxBackend._pickup_method_length}} "
-      f"{'filter':<{LiquidHandlerRvizBackend._filter_length}}"
-    )
-    # print(header)
 
     for op, channel in zip(ops, use_channels):
-      offset = f"{round(op.offset.x, 1)},{round(op.offset.y, 1)},{round(op.offset.z, 1)}"
-      row = (
-        f"  p{channel}: "
-        f"{op.resource.name[-30:]:<{LiquidHandlerRvizBackend._resource_length}} "
-        f"{offset:<{LiquidHandlerRvizBackend._offset_length}} "
-        f"{op.tip.__class__.__name__:<{LiquidHandlerRvizBackend._tip_type_length}} "
-        f"{op.tip.maximal_volume:<{LiquidHandlerRvizBackend._max_volume_length}} "
-        f"{op.tip.fitting_depth:<{LiquidHandlerRvizBackend._fitting_depth_length}} "
-        f"{op.tip.total_tip_length:<{LiquidHandlerRvizBackend._tip_length_length}} "
-        # f"{str(op.tip.pickup_method)[-20:]:<{ChatterboxBackend._pickup_method_length}} "
-        f"{'Yes' if op.tip.has_filter else 'No':<{LiquidHandlerRvizBackend._filter_length}}"
-      )
-      # print(row)
-
       coordinate = op.resource.get_absolute_location()
       x = coordinate.x
       y = coordinate.y

@@ -214,7 +214,7 @@ def ot_definition_to_resource(
         size_x=size_x,
         size_y=size_y,
         size_z=size_z,
-        ordered_items=cast(Dict[str, Tube], ordered_items),
+        ordered_items=cast(Dict[str, ResourceHolder], ordered_items),
         model=data["metadata"]["displayName"],
       )
     if display_category == "reservoir":
