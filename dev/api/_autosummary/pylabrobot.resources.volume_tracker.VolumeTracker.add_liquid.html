@@ -558,7 +558,7 @@
 <h1>pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid<a class="headerlink" href="#pylabrobot-resources-volume-tracker-volumetracker-add-liquid" title="Link to this heading">#</a></h1>
 <dl class="py method">
 <dt class="sig sig-object py" id="pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid">
-<span class="sig-prename descclassname"><span class="pre">VolumeTracker.</span></span><span class="sig-name descname"><span class="pre">add_liquid</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">liquid_or_volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">volume</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">VolumeTracker.</span></span><span class="sig-name descname"><span class="pre">add_liquid</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">liquid_or_volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">volume</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">unit</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'ul'</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span><a class="headerlink" href="#pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid" title="Link to this definition">#</a></dt>
 <dd><p>Add liquid to the container.</p>
 <dl class="simple">
 <dt>Supports multiple calling conventions:</dt><dd><ul class="simple">
@@ -566,12 +566,16 @@
 <li><p>add_liquid(volume=100.0)             - keyword volume, unknown liquid</p></li>
 <li><p>add_liquid(Liquid.WATER, 100.0)      - typed liquid + volume</p></li>
 <li><p>add_liquid(“water”, 100.0)           - liquid by name + volume</p></li>
+<li><p>add_liquid(“water”, 100.0, unit=”ug”) - with unit</p></li>
 </ul>
 </dd>
 </dl>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>volume</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>)</p>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>unit</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – 单位，仅支持 “ul” 和 “ug”，默认 “ul”。</p></li>
+<li><p><strong>volume</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
+</ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
 <dd class="field-even"><p>None</p>

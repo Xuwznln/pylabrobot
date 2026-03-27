@@ -561,12 +561,14 @@
 if the volume operations are invalid.</p>
 <dl class="simple">
 <dt>History format:</dt><dd><ul class="simple">
-<li><p>(“liquid_name”, +volume): Add liquid</p></li>
-<li><p>(None, -volume): Remove liquid proportionally from all liquids</p></li>
+<li><p>(“liquid_name”, +volume, unit): Add liquid</p></li>
+<li><p>(None, -volume, unit): Remove liquid proportionally from all liquids</p></li>
 </ul>
 </dd>
 </dl>
-<p>liquid_name is always a string (or None for proportional removal).</p>
+<p>liquid_name is always a string (or None for proportional removal).
+unit is “ul” (microliter) or “ug” (microgram), defaults to “ul”.
+Backward compatible with 2-element tuples (name, volume) — unit defaults to “ul”.</p>
 <p class="rubric">Attributes</p>
 <div class="pst-scrollable-table-container"><table class="autosummary longtable table">
 <tbody>
@@ -580,7 +582,7 @@ if the volume operations are invalid.</p>
 <td><p>Get all liquid names from history (excluding None for removals).</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.volume_tracker.VolumeTracker.liquids.html#pylabrobot.resources.volume_tracker.VolumeTracker.liquids" title="pylabrobot.resources.volume_tracker.VolumeTracker.liquids"><code class="xref py py-obj docutils literal notranslate"><span class="pre">liquids</span></code></a></p></td>
-<td><p>Get current liquids as a list of (liquid_name, volume) tuples.</p></td>
+<td><p>Get current liquids as a list of (liquid_name, volume, unit) tuples.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.volume_tracker.VolumeTracker.pending_volume.html#pylabrobot.resources.volume_tracker.VolumeTracker.pending_volume" title="pylabrobot.resources.volume_tracker.VolumeTracker.pending_volume"><code class="xref py py-obj docutils literal notranslate"><span class="pre">pending_volume</span></code></a></p></td>
 <td><p>same as volume now)</p></td>
@@ -597,7 +599,7 @@ if the volume operations are invalid.</p>
 <tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.volume_tracker.VolumeTracker.__init__.html#pylabrobot.resources.volume_tracker.VolumeTracker.__init__" title="pylabrobot.resources.volume_tracker.VolumeTracker.__init__"><code class="xref py py-obj docutils literal notranslate"><span class="pre">__init__</span></code></a>(thing, max_volume[, ...])</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid.html#pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid" title="pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid"><code class="xref py py-obj docutils literal notranslate"><span class="pre">add_liquid</span></code></a>([liquid_or_volume, volume])</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid.html#pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid" title="pylabrobot.resources.volume_tracker.VolumeTracker.add_liquid"><code class="xref py py-obj docutils literal notranslate"><span class="pre">add_liquid</span></code></a>([liquid_or_volume, volume, unit])</p></td>
 <td><p>Add liquid to the container.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.volume_tracker.VolumeTracker.clear_liquid_history.html#pylabrobot.resources.volume_tracker.VolumeTracker.clear_liquid_history" title="pylabrobot.resources.volume_tracker.VolumeTracker.clear_liquid_history"><code class="xref py py-obj docutils literal notranslate"><span class="pre">clear_liquid_history</span></code></a>()</p></td>
