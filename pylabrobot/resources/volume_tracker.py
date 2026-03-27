@@ -37,10 +37,12 @@ class VolumeTracker(SerializableMixin):
   if the volume operations are invalid.
 
   History format:
-      - ("liquid_name", +volume): Add liquid
-      - (None, -volume): Remove liquid proportionally from all liquids
+      - ("liquid_name", +volume, unit): Add liquid
+      - (None, -volume, unit): Remove liquid proportionally from all liquids
 
   liquid_name is always a string (or None for proportional removal).
+  unit is "ul" (microliter) or "ug" (microgram), defaults to "ul".
+  Backward compatible with 2-element tuples (name, volume) — unit defaults to "ul".
   """
 
   def __init__(
@@ -58,19 +60,20 @@ class VolumeTracker(SerializableMixin):
     self.max_volume = max_volume
     self._unknown_counter = unknown_counter
 
-    # Liquid history: list of (liquid_name, volume) tuples in chronological order
+    # Liquid history: list of (liquid_name, volume, unit) tuples in chronological order
     # Positive volume = add, negative volume = remove (proportionally when name is None)
-    self.liquid_history: List[Tuple[Optional[str], float]] = liquid_history or []
+    # unit: "ul" or "ug", defaults to "ul"; backward compatible with 2-element tuples
+    self.liquid_history: List[Tuple[Optional[str], float, str]] = liquid_history or []
 
     # Backward compatibility: convert old liquids format to history
     if liquids is not None and len(self.liquid_history) == 0:
       for liq, vol in liquids:
         if abs(vol) > 1e-9:
           name = self._get_liquid_name(liq)
-          self.liquid_history.append((name, vol))
+          self.liquid_history.append((name, vol, "ul"))
     elif initial_volume is not None and initial_volume > 0 and len(self.liquid_history) == 0:
       self._unknown_counter += 1
-      self.liquid_history.append((f"Unknown{self._unknown_counter}", initial_volume))
+      self.liquid_history.append((f"Unknown{self._unknown_counter}", initial_volume, "ul"))
 
     self._callback: Optional[VolumeTrackerCallback] = None
     self._checkpoint: int = len(self.liquid_history)
@@ -84,12 +87,19 @@ class VolumeTracker(SerializableMixin):
       return liquid
     return liquid.name
 
+  @staticmethod
+  def _unpack_entry(entry) -> Tuple[Optional[str], float, str]:
+    """解包历史记录条目，兼容2元素和3元素元组，默认 unit 为 'ul'。"""
+    if len(entry) >= 3:
+      return entry[0], entry[1], entry[2]
+    return entry[0], entry[1], "ul"
+
   @property
   def is_disabled(self) -> bool:
     return self._is_disabled
 
   @property
-  def current_liquids(self) -> Dict[str, float]:
+  def current_liquids(self) -> Dict[Tuple[str, str], float]:
     """Calculate current liquid state from history.
 
     Processes history from start to end:
@@ -97,52 +107,54 @@ class VolumeTracker(SerializableMixin):
     - Negative volume with None: remove proportionally from all liquids
 
     Returns:
-        Dict mapping liquid name to volume.
+        Dict mapping (liquid_name, unit) to volume.
     """
-    liquids: Dict[str, float] = {}
+    liquids: Dict[Tuple[str, str], float] = {}
 
-    for name, vol in self.liquid_history:
+    for entry in self.liquid_history:
+      name, vol, unit = self._unpack_entry(entry)
       if vol > 0:
-        # Add liquid
         if name is not None:
-          liquids[name] = liquids.get(name, 0) + vol
+          key = (name, unit)
+          liquids[key] = liquids.get(key, 0) + vol
       elif vol < 0 and name is None:
-        # Proportional removal
         remove_vol = -vol
         total_vol = sum(liquids.values())
         if total_vol > 1e-9:
-          ratio = remove_vol / total_vol
-          ratio = min(ratio, 1.0)  # Can't remove more than 100%
-          for liq_name in list(liquids.keys()):
-            liquids[liq_name] -= liquids[liq_name] * ratio
-            if liquids[liq_name] < 1e-9:
-              del liquids[liq_name]
+          ratio = min(remove_vol / total_vol, 1.0)
+          for k in list(liquids.keys()):
+            liquids[k] -= liquids[k] * ratio
+            if liquids[k] < 1e-9:
+              del liquids[k]
       elif vol < 0 and name is not None:
-        # Specific liquid removal (legacy support)
-        if name in liquids:
-          liquids[name] = max(0, liquids[name] + vol)
-          if liquids[name] < 1e-9:
-            del liquids[name]
+        key = (name, unit)
+        if key in liquids:
+          liquids[key] = max(0, liquids[key] + vol)
+          if liquids[key] < 1e-9:
+            del liquids[key]
 
     return liquids
 
   @property
-  def liquids(self) -> List[Tuple[str, float]]:
-    """Get current liquids as a list of (liquid_name, volume) tuples."""
-    return list(self.current_liquids.items())
+  def liquids(self) -> List[Tuple[str, float, str]]:
+    """Get current liquids as a list of (liquid_name, volume, unit) tuples."""
+    return [(name, vol, unit) for (name, unit), vol in self.current_liquids.items()]
 
   @liquids.setter
-  def liquids(self, value: List[Tuple[Optional[Liquid], float]]) -> None:
-    """Set liquids by clearing history and adding new liquids."""
-    # Record removal of current volume
+  def liquids(self, value: List[Tuple]) -> None:
+    """Set liquids by clearing history and adding new liquids.
+
+    Accepts (liquid, volume) or (liquid, volume, unit) tuples.
+    """
     current_vol = self.volume
     if current_vol > 1e-9:
-      self.liquid_history.append((None, -current_vol))
-    # Add new liquids
-    for liq, vol in value:
+      self.liquid_history.append((None, -current_vol, "ul"))
+    for item in value:
+      liq, vol = item[0], item[1]
+      unit = item[2] if len(item) >= 3 else "ul"
       if abs(vol) > 1e-9:
         name = self._get_liquid_name(liq)
-        self.liquid_history.append((name, vol))
+        self.liquid_history.append((name, vol, unit))
 
   @property
   def volume(self) -> float:
@@ -156,12 +168,10 @@ class VolumeTracker(SerializableMixin):
     diff = value - current_volume
     if abs(diff) > 1e-9:
       if diff > 0:
-        # Add unknown liquid
         self._unknown_counter += 1
-        self.liquid_history.append((f"Unknown{self._unknown_counter}", diff))
+        self.liquid_history.append((f"Unknown{self._unknown_counter}", diff, "ul"))
       else:
-        # Remove proportionally
-        self.liquid_history.append((None, diff))
+        self.liquid_history.append((None, diff, "ul"))
 
   @property
   def pending_volume(self) -> float:
@@ -177,7 +187,8 @@ class VolumeTracker(SerializableMixin):
   def liquid_names(self) -> List[str]:
     """Get all liquid names from history (excluding None for removals)."""
     names: List[str] = []
-    for name, vol in self.liquid_history:
+    for entry in self.liquid_history:
+      name, vol, _unit = self._unpack_entry(entry)
       if name is not None and vol > 0:
         if name not in names:
           names.append(name)
@@ -207,14 +218,14 @@ class VolumeTracker(SerializableMixin):
     if self._callback is not None:
       self._callback()
 
-  def remove_liquid(self, volume: float) -> List[Tuple[str, float]]:
+  def remove_liquid(self, volume: float) -> List[Tuple[str, float, str]]:
     """Remove liquid from the container proportionally.
 
     Args:
         volume: Volume to remove.
 
     Returns:
-        List of (liquid_name, volume) tuples that were removed.
+        List of (liquid_name, volume, unit) tuples that were removed.
     """
     available_volume = self.volume
     if (volume - available_volume) > 1e-6:
@@ -222,26 +233,25 @@ class VolumeTracker(SerializableMixin):
         f"Container {self.thing} has too little liquid: {volume}uL > {available_volume}uL."
       )
 
-    # Calculate what will be removed
     current = self.current_liquids
     total_vol = sum(current.values())
-    removed: List[Tuple[str, float]] = []
+    removed: List[Tuple[str, float, str]] = []
     if total_vol > 1e-9:
       ratio = volume / total_vol
-      for name, vol in current.items():
+      for (name, unit), vol in current.items():
         removed_vol = vol * ratio
         if removed_vol > 1e-9:
-          removed.append((name, removed_vol))
+          removed.append((name, removed_vol, unit))
 
-    # Record proportional removal in history
-    self.liquid_history.append((None, -volume))
+    self.liquid_history.append((None, -volume, "ul"))
 
     if self._callback is not None:
       self._callback()
 
     return removed
 
-  def add_liquid(self, liquid_or_volume=-1, volume: Optional[float] = None) -> None:
+  def add_liquid(self, liquid_or_volume=-1, volume: Optional[float] = None,
+                 unit: str = "ul") -> None:
     """Add liquid to the container.
 
     Supports multiple calling conventions:
@@ -249,6 +259,10 @@ class VolumeTracker(SerializableMixin):
         - add_liquid(volume=100.0)             - keyword volume, unknown liquid
         - add_liquid(Liquid.WATER, 100.0)      - typed liquid + volume
         - add_liquid("water", 100.0)           - liquid by name + volume
+        - add_liquid("water", 100.0, unit="ug") - with unit
+
+    Args:
+        unit: 单位，仅支持 "ul" 和 "ug"，默认 "ul"。
     """
     if liquid_or_volume == -1 and volume is None:
       raise TypeError("add_liquid() requires at least a volume argument")
@@ -268,11 +282,8 @@ class VolumeTracker(SerializableMixin):
         f"Container {self.thing} has too little volume: {actual_volume}uL > {self.get_free_volume()}uL."
       )
 
-    # Get liquid name (auto-generate name for None)
     name = self._get_liquid_name(actual_liquid)
-
-    # Record in liquid history
-    self.liquid_history.append((name, actual_volume))
+    self.liquid_history.append((name, actual_volume, unit))
 
     if self._callback is not None:
       self._callback()
@@ -285,7 +296,7 @@ class VolumeTracker(SerializableMixin):
     """Get the free volume of the container."""
     return self.max_volume - self.get_used_volume()
 
-  def get_liquids(self, top_volume: Optional[float] = None) -> List[Tuple[str, float]]:
+  def get_liquids(self, top_volume: Optional[float] = None) -> List[Tuple[str, float, str]]:
     """Get the current liquids in the container.
 
     Args:
@@ -293,20 +304,19 @@ class VolumeTracker(SerializableMixin):
                    If None, returns all liquids.
 
     Returns:
-        List of (liquid_name, volume) tuples.
+        List of (liquid_name, volume, unit) tuples.
     """
     current = self.current_liquids
     total_vol = sum(current.values())
 
     if top_volume is None or top_volume >= total_vol:
-      return list(current.items())
+      return [(name, vol, unit) for (name, unit), vol in current.items()]
 
     if (top_volume - total_vol) > 1e-6:
       raise TooLittleLiquidError(f"Tracker only has {total_vol}uL")
 
-    # Return proportional amounts
     ratio = top_volume / total_vol if total_vol > 1e-9 else 0
-    return [(name, vol * ratio) for name, vol in current.items() if vol * ratio > 1e-9]
+    return [(name, vol * ratio, unit) for (name, unit), vol in current.items() if vol * ratio > 1e-9]
 
   def commit(self) -> None:
     """Commit the pending operations."""
@@ -348,12 +358,14 @@ class VolumeTracker(SerializableMixin):
       self._unknown_counter = state["unknown_counter"]
 
     if "liquid_history" in state:
-      # Convert list of lists back to list of tuples
-      self.liquid_history = [
-        (data[0], data[1]) if isinstance(data, (list, tuple)) else (data, 0)
-        for data in state["liquid_history"]
-      ]
-    # Backward compatibility: convert old format
+      self.liquid_history = []
+      for data in state["liquid_history"]:
+        if isinstance(data, (list, tuple)):
+          name, vol = data[0], data[1]
+          unit = data[2] if len(data) >= 3 else "ul"
+          self.liquid_history.append((name, vol, unit))
+        else:
+          self.liquid_history.append((data, 0, "ul"))
     elif "liquids" in state:
       for item in state["liquids"]:
         liq, vol = deserialize(item)
@@ -361,12 +373,12 @@ class VolumeTracker(SerializableMixin):
           continue
         if abs(vol) > 1e-9:
           name = self._get_liquid_name(liq)
-          self.liquid_history.append((name, vol))
+          self.liquid_history.append((name, vol, "ul"))
     elif "volume" in state:
       vol = deserialize(state["volume"])
       if vol > 0:
         self._unknown_counter += 1
-        self.liquid_history.append((f"Unknown{self._unknown_counter}", vol))
+        self.liquid_history.append((f"Unknown{self._unknown_counter}", vol, "ul"))
 
   def register_callback(self, callback: VolumeTrackerCallback) -> None:
     self._callback = callback
