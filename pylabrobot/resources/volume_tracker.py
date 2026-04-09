@@ -204,15 +204,15 @@ class VolumeTracker(SerializableMixin):
     """Enable the volume tracker."""
     self._is_disabled = False
 
-  def set_volume(self, volume: float) -> None:
+  def set_volume(self, volume: float, name: str = None, unit: str = "uL") -> None:
     """Set the volume in the container."""
-    self.volume = volume
+    self.liquids = [(name, volume, unit)]
     self._checkpoint = len(self.liquid_history)
 
     if self._callback is not None:
       self._callback()
 
-  def set_liquids(self, liquids: List[Tuple[Optional["Liquid"], float]]) -> None:
+  def set_liquids(self, liquids: List[Tuple[Optional["Liquid"], float, str]]) -> None:
     """Set the liquids in the container."""
     self.liquids = liquids
     self._checkpoint = len(self.liquid_history)
