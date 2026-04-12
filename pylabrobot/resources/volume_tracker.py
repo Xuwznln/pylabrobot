@@ -49,7 +49,7 @@ class VolumeTracker(SerializableMixin):
     self,
     thing: str,
     max_volume: float,
-    liquid_history: Optional[List[Tuple[Optional[str], float]]] = None,
+    liquid_history: Optional[List[Tuple[Optional[str], float, ...]]] = None,
     unknown_counter: int = 0,
     # Backward compatibility
     liquids: Optional[List[Tuple[Optional[Liquid], float]]] = None,
@@ -368,12 +368,18 @@ class VolumeTracker(SerializableMixin):
           self.liquid_history.append((data, 0, "ul"))
     elif "liquids" in state:
       for item in state["liquids"]:
-        liq, vol = deserialize(item)
+        if isinstance(item, (list, tuple)):
+          liq = item[0]
+          vol = float(item[1]) if len(item) > 1 else 0
+          unit = item[2] if len(item) >= 3 else "ul"
+        else:
+          liq, vol = deserialize(item)
+          unit = "ul"
         if vol is None:
           continue
         if abs(vol) > 1e-9:
           name = self._get_liquid_name(liq)
-          self.liquid_history.append((name, vol, "ul"))
+          self.liquid_history.append((name, vol, unit))
     elif "volume" in state:
       vol = deserialize(state["volume"])
       if vol > 0:
