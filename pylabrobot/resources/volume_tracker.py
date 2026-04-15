@@ -90,10 +90,15 @@ class VolumeTracker(SerializableMixin):
     return liquid.name
 
   @staticmethod
+  def _normalize_unit(unit: str) -> str:
+    """统一单位大小写：uL→ul, mL→ml, uG→ug 等。"""
+    return unit.lower() if unit else "ul"
+
+  @staticmethod
   def _unpack_entry(entry) -> Tuple[Optional[str], float, str]:
     """解包历史记录条目，兼容2元素和3元素元组，默认 unit 为 'ul'。"""
     if len(entry) >= 3:
-      return entry[0], entry[1], entry[2]
+      return entry[0], entry[1], VolumeTracker._normalize_unit(entry[2])
     return entry[0], entry[1], "ul"
 
   @property
@@ -153,7 +158,7 @@ class VolumeTracker(SerializableMixin):
       self.liquid_history.append((None, -current_vol, "ul"))
     for item in value:
       liq, vol = item[0], item[1]
-      unit = item[2] if len(item) >= 3 else "ul"
+      unit = self._normalize_unit(item[2]) if len(item) >= 3 else "ul"
       if abs(vol) > 1e-9:
         name = self._get_liquid_name(liq)
         self.liquid_history.append((name, vol, unit))
@@ -204,7 +209,7 @@ class VolumeTracker(SerializableMixin):
     """Enable the volume tracker."""
     self._is_disabled = False
 
-  def set_volume(self, volume: float, name: str = None, unit: str = "uL") -> None:
+  def set_volume(self, volume: float, name: str = None, unit: str = "ul") -> None:
     """Set the volume in the container."""
     self.liquids = [(name, volume, unit)]
     self._checkpoint = len(self.liquid_history)
@@ -285,7 +290,7 @@ class VolumeTracker(SerializableMixin):
       )
 
     name = self._get_liquid_name(actual_liquid)
-    self.liquid_history.append((name, actual_volume, unit))
+    self.liquid_history.append((name, actual_volume, self._normalize_unit(unit)))
 
     if self._callback is not None:
       self._callback()
@@ -366,7 +371,7 @@ class VolumeTracker(SerializableMixin):
       for data in state["liquid_history"]:
         if isinstance(data, (list, tuple)):
           name, vol = data[0], data[1]
-          unit = data[2] if len(data) >= 3 else "ul"
+          unit = self._normalize_unit(data[2]) if len(data) >= 3 else "ul"
           self.liquid_history.append((name, vol, unit))
         else:
           self.liquid_history.append((data, 0, "ul"))
@@ -375,7 +380,7 @@ class VolumeTracker(SerializableMixin):
         if isinstance(item, (list, tuple)):
           liq = item[0]
           vol = float(item[1]) if len(item) > 1 else 0
-          unit = item[2] if len(item) >= 3 else "ul"
+          unit = self._normalize_unit(item[2]) if len(item) >= 3 else "ul"
         else:
           liq, vol = deserialize(item)
           unit = "ul"
