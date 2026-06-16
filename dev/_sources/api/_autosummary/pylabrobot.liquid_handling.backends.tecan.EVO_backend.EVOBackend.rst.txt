@@ -1,4 +1,6 @@
-﻿pylabrobot.liquid\_handling.backends.tecan.EVO\_backend.EVOBackend
+﻿:orphan:
+
+pylabrobot.liquid\_handling.backends.tecan.EVO\_backend.EVOBackend
 ==================================================================
 
 .. currentmodule:: pylabrobot.liquid_handling.backends.tecan.EVO_backend
@@ -47,6 +49,7 @@
       ~EVOBackend.drop_tips
       ~EVOBackend.drop_tips96
       ~EVOBackend.get_all_instances
+      ~EVOBackend.get_channel_spacings
       ~EVOBackend.move_channel_x
       ~EVOBackend.move_channel_y
       ~EVOBackend.move_channel_z

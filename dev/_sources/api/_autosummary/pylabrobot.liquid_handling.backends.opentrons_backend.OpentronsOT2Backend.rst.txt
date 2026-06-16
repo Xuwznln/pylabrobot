@@ -1,4 +1,6 @@
-﻿pylabrobot.liquid\_handling.backends.opentrons\_backend.OpentronsOT2Backend
+﻿:orphan:
+
+pylabrobot.liquid\_handling.backends.opentrons\_backend.OpentronsOT2Backend
 ===========================================================================
 
 .. currentmodule:: pylabrobot.liquid_handling.backends.opentrons_backend
@@ -40,6 +42,7 @@
       ~OpentronsOT2Backend.drop_tips
       ~OpentronsOT2Backend.drop_tips96
       ~OpentronsOT2Backend.get_all_instances
+      ~OpentronsOT2Backend.get_channel_spacings
       ~OpentronsOT2Backend.get_ot_name
       ~OpentronsOT2Backend.get_pipette_name
       ~OpentronsOT2Backend.home

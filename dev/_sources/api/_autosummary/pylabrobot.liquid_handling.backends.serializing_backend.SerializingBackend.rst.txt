@@ -1,4 +1,6 @@
-﻿pylabrobot.liquid\_handling.backends.serializing\_backend.SerializingBackend
+﻿:orphan:
+
+pylabrobot.liquid\_handling.backends.serializing\_backend.SerializingBackend
 ============================================================================
 
 .. currentmodule:: pylabrobot.liquid_handling.backends.serializing_backend
@@ -39,6 +41,7 @@
       ~SerializingBackend.drop_tips
       ~SerializingBackend.drop_tips96
       ~SerializingBackend.get_all_instances
+      ~SerializingBackend.get_channel_spacings
       ~SerializingBackend.move_channel_x
       ~SerializingBackend.move_channel_y
       ~SerializingBackend.move_channel_z
