@@ -1,9 +1,13 @@
 # mypy: disable-error-code="attr-defined,method-assign"
 
+import contextlib
+import copy
+import datetime
 import unittest
 import unittest.mock
 from typing import Literal, cast
 
+from pylabrobot.arms.standard import CartesianCoords
 from pylabrobot.liquid_handling import LiquidHandler
 from pylabrobot.liquid_handling.standard import GripDirection, Pickup
 from pylabrobot.plate_reading import PlateReader
@@ -34,12 +38,19 @@ from .STAR_backend import (
   CommandSyntaxError,
   HamiltonNoTipError,
   HardwareError,
+  PipChannelInformation,
   STARBackend,
   STARFirmwareError,
   UnknownHamiltonError,
+  iSWAPInformation,
   parse_star_fw_string,
 )
-from .STAR_chatterbox import _DEFAULT_EXTENDED_CONFIGURATION, _DEFAULT_MACHINE_CONFIGURATION
+from .STAR_chatterbox import (
+  _DEFAULT_EXTENDED_CONFIGURATION,
+  _DEFAULT_ISWAP_INFORMATION,
+  _DEFAULT_MACHINE_CONFIGURATION,
+  STARChatterboxBackend,
+)
 
 
 class TestSTARResponseParsing(unittest.TestCase):
@@ -141,6 +152,349 @@ def _any_write_and_read_command_call(cmd):
     read_timeout=unittest.mock.ANY,
     wait=unittest.mock.ANY,
   )
+
+
+class TestPipChannelInformationParsing(unittest.TestCase):
+  """VW (pip channel hardware-configuration) response parsing.
+
+  Regression coverage for the IndexError on short-form VW replies
+  (e.g. ``vw0 0``) returned by some post-2016 firmwares.
+  """
+
+  def test_short_form_two_fields_does_not_raise(self):
+    """Short 2-field reply (the captured `vw0 0`) should parse to baseline defaults, not raise."""
+    result = STARBackend._parse_pip_channel_information("P1VWid0001vw0 0")
+    self.assertEqual(
+      result,
+      PipChannelInformation(
+        channel_type="ML_STAR",
+        head_type="ML_STAR",
+        stop_disc_type="core_i",
+        pressure_adc="Renesas_X9268",
+      ),
+    )
+
+  def test_full_form_four_fields(self):
+    """Full 4-field reply should parse each non-baseline code to its mapped value."""
+    result = STARBackend._parse_pip_channel_information("P1VWid0001vw1 1 1 1")
+    self.assertEqual(
+      result,
+      PipChannelInformation(
+        channel_type="ML_STAR_RPC",
+        head_type="ML_STAR_PLE",
+        stop_disc_type="core_ii",
+        pressure_adc="Analog_Devices_AD5263",
+      ),
+    )
+
+  def test_head_type_code_two_maps_to_rpc(self):
+    """head_type code `2` should map to ML_STAR_RPC (the otherwise-uncovered branch)."""
+    result = STARBackend._parse_pip_channel_information("P1VWid0001vw0 2 0 0")
+    self.assertEqual(result.head_type, "ML_STAR_RPC")
+
+  def test_three_fields_defaults_only_the_missing_trailing_field(self):
+    """Present tokens should be honored; only the absent trailing field should default.
+
+    stop_disc_type is present (-> core_ii); pressure_adc is absent (-> default Renesas).
+    """
+    result = STARBackend._parse_pip_channel_information("P1VWid0001vw1 1 1")
+    self.assertEqual(
+      result,
+      PipChannelInformation(
+        channel_type="ML_STAR_RPC",
+        head_type="ML_STAR_PLE",
+        stop_disc_type="core_ii",
+        pressure_adc="Renesas_X9268",
+      ),
+    )
+
+  def test_empty_field_list_raises_value_error(self):
+    """Zero fields should raise ValueError -- a malformed reply, distinct from a known short form."""
+    with self.assertRaises(ValueError):
+      STARBackend._parse_pip_channel_information("P1VWid0001vw")
+
+  def test_full_form_parity_across_all_combinations(self):
+    """Every 4-field reply should parse identically to the historical logic.
+
+    Only absent fields are newly defaulted; present fields are unchanged. `legacy`
+    below is the genuine pre-fix implementation, so this is a real parity oracle.
+    """
+    import itertools
+
+    def legacy(resp: str) -> PipChannelInformation:
+      hw = resp.split("vw")[-1].strip().split()
+      return PipChannelInformation(
+        channel_type="ML_STAR_RPC" if hw[0] == "1" else "ML_STAR",
+        head_type="ML_STAR_PLE" if hw[1] == "1" else "ML_STAR_RPC" if hw[1] == "2" else "ML_STAR",
+        stop_disc_type="core_i" if hw[2] == "0" else "core_ii",
+        pressure_adc="Analog_Devices_AD5263" if hw[3] == "1" else "Renesas_X9268",
+      )
+
+    for a, b, c, d in itertools.product(["0", "1", "2"], repeat=4):
+      resp = f"P1VWid0001vw{a} {b} {c} {d}"
+      with self.subTest(resp=resp):
+        self.assertEqual(STARBackend._parse_pip_channel_information(resp), legacy(resp))
+
+
+class TestiSWAPForwardKinematics(unittest.TestCase):
+  """Geometry of `STARBackend._iswap_fk` (pure FK, no I/O).
+
+  Verifies the canonical (W, T) configurations against the docstring examples
+  in `request_iswap_wrist_drive_orientation`:
+    - W=FRONT (0)  + T=STRAIGHT  -> arm extends in -y (front of deck)
+    - W=LEFT (-90) + T=STRAIGHT  -> arm extends in -x (left of deck)
+    - W=RIGHT(+90) + T=STRAIGHT  -> arm extends in +x (right of deck)
+    - W=FRONT (0)  + T=RIGHT     -> arm tip ends up to the left (-x) of rot. drive
+  Uses factory-default link lengths (138 mm each) and the factory-default
+  STRAIGHT angle (~-45 deg). Asserts only on the public pose contract
+  (`location` + `rotation.z`).
+  """
+
+  L1 = 138.0
+  L2 = 138.0
+  T_STRAIGHT = -45.0  # factory-default STRAIGHT calibration (EEPROM-dependent in practice)
+  Z_OFFSET = STARBackend.iswap_rotation_drive_z_offset_above_finger_mm
+  BASE_X, BASE_Y, BASE_Z = 100.0, 500.0, 200.0
+  # Gripper jaw width: hardware range ~71-134 mm (drive min/max increments).
+  # FK doesn't read this axis, but the joint dict represents full state, so
+  # use a realistic mid-range plate-grip value.
+  GRIPPER_WIDTH = 90.0
+
+  def _fk(self, w: float, t: float) -> CartesianCoords:
+    joints = {
+      STARBackend.iSWAPAxis.X: self.BASE_X,
+      STARBackend.iSWAPAxis.Y: self.BASE_Y,
+      STARBackend.iSWAPAxis.Z: self.BASE_Z,
+      STARBackend.iSWAPAxis.ROTATION: w,
+      STARBackend.iSWAPAxis.WRIST: t,
+      STARBackend.iSWAPAxis.GRIPPER: self.GRIPPER_WIDTH,
+    }
+    return STARBackend._iswap_fk(
+      joints=joints,
+      link_1_length=self.L1,
+      link_2_length=self.L2,
+      wrist_straight_angle=self.T_STRAIGHT,
+    )
+
+  def test_front_straight_extends_in_minus_y(self):
+    pose = self._fk(w=0.0, t=self.T_STRAIGHT)
+    self.assertAlmostEqual(pose.location.x, self.BASE_X, places=6)
+    self.assertAlmostEqual(pose.location.y, self.BASE_Y - (self.L1 + self.L2), places=6)
+    self.assertAlmostEqual(pose.location.z, self.BASE_Z - self.Z_OFFSET, places=6)
+    self.assertAlmostEqual(pose.rotation.z, -90.0, places=6)
+
+  def test_left_straight_extends_in_minus_x(self):
+    pose = self._fk(w=-90.0, t=self.T_STRAIGHT)
+    self.assertAlmostEqual(pose.location.x, self.BASE_X - (self.L1 + self.L2), places=6)
+    self.assertAlmostEqual(pose.location.y, self.BASE_Y, places=6)
+    self.assertAlmostEqual(pose.rotation.z, -180.0, places=6)
+
+  def test_front_right_extends_in_minus_x(self):
+    """W=FRONT + T=RIGHT (-135 deg motor) -> gripper points to deck-left."""
+    pose = self._fk(w=0.0, t=-135.0)
+    # Link 1 points -y from base; link 2 is bent right (CW by 90 deg) -> points -x.
+    self.assertAlmostEqual(pose.location.x, self.BASE_X - self.L2, places=6)
+    self.assertAlmostEqual(pose.location.y, self.BASE_Y - self.L1, places=6)
+    self.assertAlmostEqual(pose.rotation.z, -180.0, places=6)
+
+  def test_reverse_folds_arm_back_onto_base_xy(self):
+    """T=REVERSE (+135) folds link 2 back 180 deg from link 1 -> tip XY = base XY."""
+    pose = self._fk(w=0.0, t=+135.0)
+    self.assertAlmostEqual(pose.location.x, self.BASE_X, places=6)
+    self.assertAlmostEqual(pose.location.y, self.BASE_Y, places=6)
+
+
+class TestiSWAPAxisPredicates(unittest.TestCase):
+  """Predicates on `STARBackend.iSWAPAxis` classify axes by kinematic role / unit."""
+
+  def test_is_in_kinematic_chain(self):
+    Axis = STARBackend.iSWAPAxis
+    for a in (Axis.X, Axis.Y, Axis.Z, Axis.ROTATION, Axis.WRIST):
+      self.assertTrue(a.is_in_kinematic_chain, f"{a.name} should be in the chain")
+    self.assertFalse(Axis.GRIPPER.is_in_kinematic_chain, "GRIPPER should NOT be in the chain")
+
+
+class TestiSWAPRequestJointState(unittest.IsolatedAsyncioTestCase):
+  """`iswap_request_joint_state` composes the per-axis request methods into one dict."""
+
+  def _make_backend(self) -> STARBackend:
+    b = STARBackend()
+    b._extended_conf = _DEFAULT_EXTENDED_CONFIGURATION
+    b.iswap_rotation_drive_request_x = unittest.mock.AsyncMock(return_value=100.0)
+    b.iswap_rotation_drive_request_y = unittest.mock.AsyncMock(return_value=500.0)
+    b.iswap_rotation_drive_request_z = unittest.mock.AsyncMock(return_value=200.0)
+    b.iswap_rotation_drive_request_angle = unittest.mock.AsyncMock(return_value=0.0)
+    b.iswap_wrist_drive_request_angle = unittest.mock.AsyncMock(return_value=-45.0)
+    b.iswap_gripper_request_width = unittest.mock.AsyncMock(return_value=90.0)
+    return b
+
+  async def test_returns_full_axis_dict(self):
+    b = self._make_backend()
+    joints = await b.iswap_request_joint_state()
+    Axis = STARBackend.iSWAPAxis
+    self.assertEqual(
+      joints,
+      {
+        Axis.X: 100.0,
+        Axis.Y: 500.0,
+        Axis.Z: 200.0,
+        Axis.ROTATION: 0.0,
+        Axis.WRIST: -45.0,
+        Axis.GRIPPER: 90.0,
+      },
+    )
+
+
+class TestiSWAPRequestPose(unittest.IsolatedAsyncioTestCase):
+  """`iswap_request_pose` reads joints + runs FK against the cached link lengths."""
+
+  def _make_backend(self) -> STARBackend:
+    b = STARBackend()
+    b._extended_conf = _DEFAULT_EXTENDED_CONFIGURATION
+    b._iswap_information = _DEFAULT_ISWAP_INFORMATION
+    b.iswap_rotation_drive_request_x = unittest.mock.AsyncMock(return_value=100.0)
+    b.iswap_rotation_drive_request_y = unittest.mock.AsyncMock(return_value=500.0)
+    b.iswap_rotation_drive_request_z = unittest.mock.AsyncMock(return_value=200.0)
+    b.iswap_rotation_drive_request_angle = unittest.mock.AsyncMock(return_value=0.0)
+    b.iswap_wrist_drive_request_angle = unittest.mock.AsyncMock(return_value=-45.0)
+    b.iswap_gripper_request_width = unittest.mock.AsyncMock(return_value=90.0)
+    return b
+
+  async def test_front_straight_pose(self):
+    """Canonical W=0 / T=-45 / base=(100, 500, 200) -> grip ~ (100, 224, 187), yaw ~ -90°.
+
+    Verifies the full I/O path (per-axis reads -> joint state -> FK -> pose). EEPROM
+    STRAIGHT (-8859 incr) maps to ~-45.0007 deg, so the canonical -90° yaw lands at
+    -89.999° and grip x picks up a ~0.002 mm offset - this is intentional per-machine
+    calibration drift, not an FK bug.
+    """
+    b = self._make_backend()
+    pose = await b.iswap_request_pose()
+    self.assertIsInstance(pose, CartesianCoords)
+    self.assertAlmostEqual(pose.location.x, 100.0, places=2)
+    self.assertAlmostEqual(pose.location.y, 224.0, places=3)
+    self.assertAlmostEqual(pose.location.z, 187.0, places=6)
+    self.assertAlmostEqual(pose.rotation.z, -90.0, places=2)
+    # rotation.x / y are always 0 - the gripper plane stays parallel to the deck.
+    self.assertEqual(pose.rotation.x, 0.0)
+    self.assertEqual(pose.rotation.y, 0.0)
+
+
+class TestiSWAPInformationGuard(unittest.TestCase):
+  """The `iswap_information` property raises before setup populates it."""
+
+  def test_raises_before_setup(self):
+    b = STARBackend()
+    self.assertIsNone(b._iswap_information)
+    with self.assertRaisesRegex(RuntimeError, "iSWAP information not loaded"):
+      _ = b.iswap_information
+
+  def test_returns_record_when_set(self):
+    b = STARBackend()
+    b._iswap_information = _DEFAULT_ISWAP_INFORMATION
+    self.assertIs(b.iswap_information, _DEFAULT_ISWAP_INFORMATION)
+
+
+class TestChatterboxiSWAPSetup(unittest.IsolatedAsyncioTestCase):
+  """`STARChatterboxBackend.setup()` populates `_iswap_information` from the
+  default record (or a constructor override) when the iSWAP is installed."""
+
+  @staticmethod
+  def _make_chatterbox(**kwargs) -> STARChatterboxBackend:
+    cb = STARChatterboxBackend(**kwargs)
+    cb.set_deck(STARLetDeck())
+    return cb
+
+  async def test_default_record_assigned_when_iswap_installed(self):
+    cb = self._make_chatterbox()
+    await cb.setup()
+    self.assertIs(cb.iswap_information, _DEFAULT_ISWAP_INFORMATION)
+
+  async def test_constructor_override_takes_precedence(self):
+    custom = iSWAPInformation(
+      fw_version="custom-test",
+      rotation_drive_x_offset=50.0,
+      rotation_drive_y_max=700.0,
+      link_1_length=140.0,
+      link_2_length=140.0,
+      rotation_drive_predefined_increments={
+        STARBackend.RotationDriveOrientation.LEFT: -29000,
+        STARBackend.RotationDriveOrientation.FRONT: 0,
+        STARBackend.RotationDriveOrientation.RIGHT: 29000,
+        STARBackend.RotationDriveOrientation.PARKED_RIGHT: 29500,
+      },
+      wrist_drive_predefined_increments={
+        STARBackend.WristDriveOrientation.RIGHT: -26000,
+        STARBackend.WristDriveOrientation.STRAIGHT: -8800,
+        STARBackend.WristDriveOrientation.LEFT: 8800,
+        STARBackend.WristDriveOrientation.REVERSE: 26000,
+      },
+    )
+    cb = self._make_chatterbox(iswap_information=custom)
+    await cb.setup()
+    self.assertIs(cb.iswap_information, custom)
+    self.assertEqual(cb.iswap_information.fw_version, "custom-test")
+    self.assertEqual(cb.iswap_information.link_1_length, 140.0)
+
+  async def test_skipped_when_iswap_not_installed(self):
+    # Build an extended_conf with iSWAP NOT installed.
+    no_iswap_conf = copy.deepcopy(_DEFAULT_EXTENDED_CONFIGURATION)
+    no_iswap_conf.left_x_drive = copy.deepcopy(no_iswap_conf.left_x_drive)
+    no_iswap_conf.left_x_drive.iswap_installed = False
+    cb = self._make_chatterbox(extended_configuration=no_iswap_conf)
+    await cb.setup()
+    self.assertIsNone(cb._iswap_information)
+    with self.assertRaisesRegex(RuntimeError, "iSWAP information not loaded"):
+      _ = cb.iswap_information
+
+
+class TestHead96DriveDefaults(unittest.IsolatedAsyncioTestCase):
+  """Head96Information carries the firmware default speed/acceleration for every drive, in standard
+  units: version-resolved where it changed across firmware, constant fields where it did not."""
+
+  async def test_setup_resolves_all_drive_defaults(self):
+    """setup() populates all eight per-drive defaults with the 2013+ firmware values."""
+    cb = STARChatterboxBackend()  # mocks a 2023 (2013+) head
+    cb.set_deck(STARLetDeck())
+    await cb.setup()
+    info = cb._head96_information
+    assert info is not None
+    self.assertAlmostEqual(info.y_drive_speed_default, 390.62, places=2)
+    self.assertAlmostEqual(info.y_drive_acceleration_default, 546.88, places=2)
+    self.assertEqual(info.z_drive_speed_default, 85.0)
+    self.assertEqual(info.z_drive_acceleration_default, 400.0)
+    self.assertEqual(info.dispensing_drive_speed_default, 261.1)
+    self.assertAlmostEqual(info.dispensing_drive_acceleration_default, 17406.84, places=2)
+    self.assertAlmostEqual(info.squeezer_drive_speed_default, 15.86, places=2)
+    self.assertAlmostEqual(info.squeezer_drive_acceleration_default, 62.6, places=2)
+
+  def test_version_resolved_default_falls_back_for_pre_2010_firmware(self):
+    """A version-resolved default switches to the 2008 firmware value for pre-2010 heads (Y, whose
+    encoder resolution is constant, so both branches are exact)."""
+    star = STARBackend(read_timeout=1)
+    self.assertAlmostEqual(
+      star._head96_resolve_y_drive_speed_default(datetime.date(2008, 11, 11)), 312.5, places=2
+    )
+    self.assertAlmostEqual(
+      star._head96_resolve_y_drive_speed_default(datetime.date(2013, 9, 2)), 390.62, places=2
+    )
+
+
+class TestiSWAPYMaxBootstrap(unittest.IsolatedAsyncioTestCase):
+  """`_iswap_rotation_drive_request_y_max` runs during setup, before
+  `iswap_information` exists, so it must not read it (regression: it used to,
+  raising "iSWAP information not loaded" mid-`set_up_iswap`)."""
+
+  async def test_y_max_works_before_iswap_information_set(self):
+    b = STARBackend()
+    b._extended_conf = _DEFAULT_EXTENDED_CONFIGURATION
+    # Leave _iswap_information unset, exactly as it is during set_up_iswap().
+    self.assertIsNone(b._iswap_information)
+    b.send_command = unittest.mock.AsyncMock(return_value={"py": [0] * 10})
+
+    # The regression was a raise ("iSWAP information not loaded"); a clean return
+    # is the assertion.
+    await b._iswap_rotation_drive_request_y_max()
 
 
 class TestSTARUSBComms(unittest.IsolatedAsyncioTestCase):
@@ -1632,8 +1986,8 @@ class TestChannelsMinimumYSpacing(unittest.IsolatedAsyncioTestCase):
     self.assertNotEqual(cmd_9mm, cmd_18mm)
 
 
-class STARTestBase(unittest.IsolatedAsyncioTestCase):
-  """Shared setup for probe/batch/helper tests."""
+class TestProbeLiquidHeights(unittest.IsolatedAsyncioTestCase):
+  """Tests for probe_liquid_heights: detection dispatch, replicates, error handling."""
 
   async def asyncSetUp(self):
     self.STAR = STARBackend(read_timeout=1)
@@ -1671,179 +2025,73 @@ class STARTestBase(unittest.IsolatedAsyncioTestCase):
     tip = self.tip_rack.get_tip("A1")
     self.lh.update_head_state({ch: tip for ch in channels})
 
+  def _standard_mocks(self, detect_side_effect=None):
+    """Return a context manager stack with standard mocks for probe_liquid_heights."""
+    mocks = {}
 
-class TestMoveToTraverseHeight(STARTestBase):
-  async def test_none_calls_z_safety(self):
-    with unittest.mock.patch.object(
-      self.STAR, "move_all_channels_in_z_safety", new_callable=unittest.mock.AsyncMock
-    ) as mock_z_safety:
-      await self.STAR._move_to_traverse_height(channels=[0, 1], traverse_height=None)
-      mock_z_safety.assert_awaited_once()
-
-  async def test_float_calls_position_z(self):
-    with unittest.mock.patch.object(
-      self.STAR, "position_channels_in_z_direction", new_callable=unittest.mock.AsyncMock
-    ) as mock_pos_z:
-      await self.STAR._move_to_traverse_height(channels=[0, 2], traverse_height=245.0)
-      mock_pos_z.assert_awaited_once_with({0: 245.0, 2: 245.0})
-
-
-class TestComputeChannelsInResourceLocations(STARTestBase):
-  async def test_explicit_offsets(self):
-    wells = [self.plate.get_item("A1"), self.plate.get_item("B1")]
-    offsets = [Coordinate(0, 0, 0), Coordinate(0, 0, 0)]
-    locs = self.STAR._compute_channels_in_resource_locations(
-      resources=wells, use_channels=[0, 1], offsets=offsets
+    if detect_side_effect is None:
+      detect_side_effect = unittest.mock.AsyncMock(return_value=None)
+    mocks["detect"] = unittest.mock.patch.object(
+      self.STAR, "_move_z_drive_to_liquid_surface_using_clld", detect_side_effect
     )
-    self.assertEqual(len(locs), 2)
-    self.assertAlmostEqual(locs[0].x, 298.3, places=1)
-    self.assertAlmostEqual(locs[0].y, 145.7, places=1)
-    self.assertAlmostEqual(locs[1].x, 298.3, places=1)
-    self.assertAlmostEqual(locs[1].y, 136.7, places=1)
-
-  async def test_none_offsets_single_resource(self):
-    """Same resource twice: both channels get the well center (offset auto-calc falls back to zero for small wells)."""
-    well = self.plate.get_item("A1")
-    locs = self.STAR._compute_channels_in_resource_locations(
-      resources=[well, well], use_channels=[0, 1], offsets=None
+    mocks["plld"] = unittest.mock.patch.object(
+      self.STAR,
+      "_search_for_surface_using_plld",
+      new_callable=unittest.mock.AsyncMock,
+      return_value=None,
     )
-    self.assertEqual(len(locs), 2)
-    self.assertAlmostEqual(locs[0].x, 298.3, places=1)
-    self.assertAlmostEqual(locs[0].y, 145.7, places=1)
-    self.assertAlmostEqual(locs[1].x, 298.3, places=1)
-    self.assertAlmostEqual(locs[1].y, 145.7, places=1)
-
-  async def test_none_offsets_different_resources(self):
-    """Different resources with no offsets: each gets its own center."""
-    well_a1 = self.plate.get_item("A1")
-    well_b1 = self.plate.get_item("B1")
-    locs = self.STAR._compute_channels_in_resource_locations(
-      resources=[well_a1, well_b1], use_channels=[0, 1], offsets=None
+    mocks["pip_height"] = unittest.mock.patch.object(
+      self.STAR,
+      "request_pip_height_last_lld",
+      new_callable=unittest.mock.AsyncMock,
+      return_value=list(range(12)),
     )
-    self.assertEqual(len(locs), 2)
-    self.assertAlmostEqual(locs[0].x, 298.3, places=1)
-    self.assertAlmostEqual(locs[0].y, 145.7, places=1)
-    self.assertAlmostEqual(locs[1].x, 298.3, places=1)
-    self.assertAlmostEqual(locs[1].y, 136.7, places=1)
+    mocks["tip_len"] = unittest.mock.patch.object(
+      self.STAR,
+      "request_tip_len_on_channel",
+      new_callable=unittest.mock.AsyncMock,
+      return_value=59.9,
+    )
+    mocks["tip_presence"] = unittest.mock.patch.object(
+      self.STAR,
+      "request_tip_presence",
+      new_callable=unittest.mock.AsyncMock,
+      return_value={i: True for i in range(8)},
+    )
+    mocks["z_safety"] = unittest.mock.patch.object(
+      self.STAR,
+      "move_all_channels_in_z_safety",
+      new_callable=unittest.mock.AsyncMock,
+    )
+    mocks["move_x"] = unittest.mock.patch.object(
+      self.STAR,
+      "move_channel_x",
+      new_callable=unittest.mock.AsyncMock,
+    )
+    mocks["pos_y"] = unittest.mock.patch.object(
+      self.STAR,
+      "position_channels_in_y_direction",
+      new_callable=unittest.mock.AsyncMock,
+    )
+    mocks["backmost_y"] = unittest.mock.patch.object(
+      self.STAR.extended_conf,
+      "pip_maximal_y_position",
+      606.5,
+    )
+    return mocks
 
-
-class TestExecuteBatched(STARTestBase):
-  async def test_single_batch(self):
-    well = self.plate.get_item("A1")
-    calls = []
-
-    async def func(batch):
-      calls.append(batch)
-
-    self._put_tips_on_channels([0, 1])
-
-    with (
-      unittest.mock.patch.object(self.STAR, "move_channel_x", new_callable=unittest.mock.AsyncMock),
-      unittest.mock.patch.object(
-        self.STAR, "position_channels_in_y_direction", new_callable=unittest.mock.AsyncMock
-      ),
-      unittest.mock.patch.object(
-        self.STAR, "move_all_channels_in_z_safety", new_callable=unittest.mock.AsyncMock
-      ),
-    ):
-      await self.STAR.execute_batched(
-        func=func,
-        resources=[well, well],
-        use_channels=[0, 1],
-      )
-
-    all_indices = [i for call in calls for i in call]
-    self.assertEqual(sorted(all_indices), [0, 1])
-
-  async def test_different_x_groups(self):
-    well_a1 = self.plate.get_item("A1")
-    well_a2 = self.plate.get_item("A2")
-    calls = []
-
-    async def func(batch):
-      calls.append(list(batch))
-
-    self._put_tips_on_channels([0, 1])
-
-    with (
-      unittest.mock.patch.object(self.STAR, "move_channel_x", new_callable=unittest.mock.AsyncMock),
-      unittest.mock.patch.object(
-        self.STAR, "position_channels_in_y_direction", new_callable=unittest.mock.AsyncMock
-      ),
-      unittest.mock.patch.object(
-        self.STAR, "move_all_channels_in_z_safety", new_callable=unittest.mock.AsyncMock
-      ),
-    ):
-      await self.STAR.execute_batched(
-        func=func,
-        resources=[well_a1, well_a2],
-        use_channels=[0, 1],
-        resource_offsets=[Coordinate.zero(), Coordinate.zero()],
-      )
-
-    all_indices = [i for call in calls for i in call]
-    self.assertEqual(sorted(all_indices), [0, 1])
-
-  async def test_traverse_height(self):
-    well_a1 = self.plate.get_item("A1")
-    well_a2 = self.plate.get_item("A2")
-
-    async def func(batch):
-      pass
-
-    self._put_tips_on_channels([0, 1])
-
-    with (
-      unittest.mock.patch.object(self.STAR, "move_channel_x", new_callable=unittest.mock.AsyncMock),
-      unittest.mock.patch.object(
-        self.STAR, "position_channels_in_y_direction", new_callable=unittest.mock.AsyncMock
-      ),
-      unittest.mock.patch.object(
-        self.STAR, "_move_to_traverse_height", new_callable=unittest.mock.AsyncMock
-      ) as mock_traverse,
-    ):
-      await self.STAR.execute_batched(
-        func=func,
-        resources=[well_a1, well_a2],
-        use_channels=[0, 1],
-        resource_offsets=[Coordinate.zero(), Coordinate.zero()],
-        min_traverse_height_during_command=200.0,
-      )
-
-      if mock_traverse.await_count > 0:
-        for call in mock_traverse.call_args_list:
-          self.assertEqual(call.kwargs.get("traverse_height"), 200.0)
-
-
-class TestProbeLiquidHeightsBatch(STARTestBase):
   async def test_single_well_returns_height(self):
     well = self.plate.get_item("A1")
     self._put_tips_on_channels([0])
 
-    with (
-      unittest.mock.patch.object(
-        self.STAR,
-        "_move_z_drive_to_liquid_surface_using_clld",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=None,
-      ),
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_pip_height_last_lld",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=list(range(12)),
-      ),
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_tip_len_on_channel",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=59.9,
-      ),
-    ):
-      result = await self.STAR._probe_liquid_heights_batch(containers=[well], use_channels=[0])
+    mocks = self._standard_mocks()
+    with contextlib.ExitStack() as stack:
+      for v in mocks.values():
+        stack.enter_context(v)
+      result = await self.STAR.probe_liquid_heights(containers=[well], use_channels=[0])
 
     # request_pip_height_last_lld returns list(range(12)), so channel 0 gets height 0.
-    # relative = 0 - cavity_bottom_z = 0 - 186.65 = -186.65
+    # relative = 0 - cavity_bottom_z
     self.assertEqual(len(result), 1)
     self.assertAlmostEqual(result[0], 0 - well.get_absolute_location("c", "c", "cavity_bottom").z)
 
@@ -1852,26 +2100,11 @@ class TestProbeLiquidHeightsBatch(STARTestBase):
     self._put_tips_on_channels([0])
 
     mock_detect = unittest.mock.AsyncMock(return_value=None)
-    with (
-      unittest.mock.patch.object(
-        self.STAR, "_move_z_drive_to_liquid_surface_using_clld", mock_detect
-      ),
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_pip_height_last_lld",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=list(range(12)),
-      ),
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_tip_len_on_channel",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=59.9,
-      ),
-    ):
-      await self.STAR._probe_liquid_heights_batch(
-        containers=[well], use_channels=[0], n_replicates=3
-      )
+    mocks = self._standard_mocks(detect_side_effect=mock_detect)
+    with contextlib.ExitStack() as stack:
+      for v in mocks.values():
+        stack.enter_context(v)
+      await self.STAR.probe_liquid_heights(containers=[well], use_channels=[0], n_replicates=3)
 
     self.assertEqual(mock_detect.await_count, 3)
 
@@ -1894,26 +2127,13 @@ class TestProbeLiquidHeightsBatch(STARTestBase):
     async def raise_error(**kwargs):
       raise error
 
-    with (
-      unittest.mock.patch.object(
-        self.STAR,
-        "_move_z_drive_to_liquid_surface_using_clld",
-        unittest.mock.AsyncMock(side_effect=raise_error),
-      ),
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_pip_height_last_lld",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=list(range(12)),
-      ),
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_tip_len_on_channel",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=59.9,
-      ),
-    ):
-      result = await self.STAR._probe_liquid_heights_batch(containers=[well], use_channels=[0])
+    mocks = self._standard_mocks(
+      detect_side_effect=unittest.mock.AsyncMock(side_effect=raise_error)
+    )
+    with contextlib.ExitStack() as stack:
+      for v in mocks.values():
+        stack.enter_context(v)
+      result = await self.STAR.probe_liquid_heights(containers=[well], use_channels=[0])
 
     self.assertEqual(result[0], 0.0)
 
@@ -1942,58 +2162,46 @@ class TestProbeLiquidHeightsBatch(STARTestBase):
         return None
       raise error
 
-    with (
-      unittest.mock.patch.object(
-        self.STAR,
-        "_move_z_drive_to_liquid_surface_using_clld",
-        unittest.mock.AsyncMock(side_effect=side_effect),
-      ),
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_pip_height_last_lld",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=list(range(12)),
-      ),
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_tip_len_on_channel",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=59.9,
-      ),
-    ):
+    mocks = self._standard_mocks(
+      detect_side_effect=unittest.mock.AsyncMock(side_effect=side_effect)
+    )
+    with contextlib.ExitStack() as stack:
+      for v in mocks.values():
+        stack.enter_context(v)
       with self.assertRaises(RuntimeError):
-        await self.STAR._probe_liquid_heights_batch(
-          containers=[well], use_channels=[0], n_replicates=2
-        )
+        await self.STAR.probe_liquid_heights(containers=[well], use_channels=[0], n_replicates=2)
 
   async def test_pressure_lld_mode(self):
     well = self.plate.get_item("A1")
     self._put_tips_on_channels([0])
 
-    with (
-      unittest.mock.patch.object(
-        self.STAR,
-        "_search_for_surface_using_plld",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=None,
-      ) as mock_plld,
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_pip_height_last_lld",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=list(range(12)),
-      ),
-      unittest.mock.patch.object(
-        self.STAR,
-        "request_tip_len_on_channel",
-        new_callable=unittest.mock.AsyncMock,
-        return_value=59.9,
-      ),
-    ):
-      await self.STAR._probe_liquid_heights_batch(
+    mocks = self._standard_mocks()
+    with contextlib.ExitStack() as stack:
+      entered = {k: stack.enter_context(v) for k, v in mocks.items()}
+      await self.STAR.probe_liquid_heights(
         containers=[well],
         use_channels=[0],
         lld_mode=self.STAR.LLDMode.PRESSURE,
       )
 
-    mock_plld.assert_awaited_once()
+    entered["plld"].assert_awaited_once()
+
+  async def test_duplicate_channels_serialize_measurements(self):
+    """Same physical channel probing two wells in one call: results don't collide."""
+    well_a = self.plate.get_item("A1")
+    well_b = self.plate.get_item("B1")
+    self._put_tips_on_channels([0])
+
+    mocks = self._standard_mocks()
+    with contextlib.ExitStack() as stack:
+      for v in mocks.values():
+        stack.enter_context(v)
+      result = await self.STAR.probe_liquid_heights(
+        containers=[well_a, well_b],
+        use_channels=[0, 0],
+      )
+
+    # Two jobs, one result each, keyed by job index not channel.
+    self.assertEqual(len(result), 2)
+    self.assertAlmostEqual(result[0], 0 - well_a.get_absolute_location("c", "c", "cavity_bottom").z)
+    self.assertAlmostEqual(result[1], 0 - well_b.get_absolute_location("c", "c", "cavity_bottom").z)

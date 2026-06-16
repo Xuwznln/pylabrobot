@@ -50,6 +50,7 @@ class Well(Container):
     compute_height_from_volume: Optional[Callable[[float], float]] = None,
     cross_section_type: Union[CrossSectionType, str] = CrossSectionType.CIRCLE,
     height_volume_data: Optional[Dict[float, float]] = None,
+    no_go_zones=None,
   ):
     """Create a new well.
 
@@ -99,6 +100,7 @@ class Well(Container):
       compute_height_from_volume=compute_height_from_volume,
       material_z_thickness=material_z_thickness,
       height_volume_data=height_volume_data,
+      no_go_zones=no_go_zones,
     )
     self.bottom_type = bottom_type
     self.cross_section_type = cross_section_type
@@ -112,7 +114,7 @@ class Well(Container):
       "cross_section_type": self.cross_section_type.value,
     }
 
-  def set_volume(self, volume: float, name: str = None, unit: str = "uL"):
+  def set_volume(self, volume: float, name: Optional[str] = None, unit: str = "uL"):
     """Set the volume of the well.
 
     (wraps :meth:`~.VolumeTracker.set_volume`)

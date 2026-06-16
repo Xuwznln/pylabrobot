@@ -11,7 +11,9 @@ from pylabrobot.liquid_handling.backends.hamilton.STAR_backend import (
   Head96Information,
   MachineConfiguration,
   STARBackend,
+  iSWAPInformation,
 )
+from pylabrobot.resources.container import Container
 from pylabrobot.resources.well import Well
 
 _DEFAULT_MACHINE_CONFIGURATION = MachineConfiguration(
@@ -32,6 +34,30 @@ _DEFAULT_EXTENDED_CONFIGURATION = ExtendedConfiguration(
   max_iswap_collision_free_position=600.0,
 )
 
+# Hamilton factory defaults. Per-machine EEPROM calibration will differ
+# slightly (e.g., L1=137.8, L2=137.7, STRAIGHT=-45.01 on one tested machine);
+# these defaults are accurate enough for simulation but not for
+# calibration-sensitive applications.
+_DEFAULT_ISWAP_INFORMATION = iSWAPInformation(
+  fw_version="simulated",
+  rotation_drive_x_offset=34.0,
+  rotation_drive_y_max=627.4,
+  link_1_length=138.0,
+  link_2_length=138.0,
+  rotation_drive_predefined_increments={
+    STARBackend.RotationDriveOrientation.LEFT: -29068,  # ~-90 deg
+    STARBackend.RotationDriveOrientation.FRONT: 0,  # ~+0 deg
+    STARBackend.RotationDriveOrientation.RIGHT: 29068,  # ~+90 deg
+    STARBackend.RotationDriveOrientation.PARKED_RIGHT: 29500,  # ~+91 deg
+  },
+  wrist_drive_predefined_increments={
+    STARBackend.WristDriveOrientation.RIGHT: -26577,  # ~-135 deg
+    STARBackend.WristDriveOrientation.STRAIGHT: -8859,  # ~-45 deg
+    STARBackend.WristDriveOrientation.LEFT: 8859,  # ~+45 deg
+    STARBackend.WristDriveOrientation.REVERSE: 26577,  # ~+135 deg
+  },
+)
+
 
 class STARChatterboxBackend(STARBackend):
   """Chatterbox backend for 'STAR'"""
@@ -41,6 +67,7 @@ class STARChatterboxBackend(STARBackend):
     num_channels: int = 8,
     machine_configuration: MachineConfiguration = _DEFAULT_MACHINE_CONFIGURATION,
     extended_configuration: ExtendedConfiguration = _DEFAULT_EXTENDED_CONFIGURATION,
+    iswap_information: Optional[iSWAPInformation] = None,
     channels_minimum_y_spacing: Optional[List[float]] = None,
     # deprecated parameters
     core96_head_installed: Optional[bool] = None,
@@ -52,6 +79,10 @@ class STARChatterboxBackend(STARBackend):
       num_channels: Number of pipetting channels (default: 8)
       machine_configuration: Machine configuration to return from `request_machine_configuration`.
       extended_configuration: Extended configuration to return from `request_extended_configuration`.
+      iswap_information: Optional override for the simulated iSWAP setup state
+        (link lengths, EEPROM-calibrated stops, fw version). None means use
+        `_DEFAULT_ISWAP_INFORMATION` (Hamilton factory defaults). Only used
+        when the extended configuration reports iSWAP as installed.
       channels_minimum_y_spacing: Per-channel minimum Y spacing in mm. If None, defaults to
         `extended_configuration.min_raster_pitch_pip_channels` for all channels.
       core96_head_installed: Deprecated. Set `extended_configuration.left_x_drive
@@ -62,6 +93,7 @@ class STARChatterboxBackend(STARBackend):
     super().__init__()
     self._num_channels = num_channels
     self._iswap_parked = True
+    self._sim_iswap_information = iswap_information  # None means use default at setup
 
     if core96_head_installed is not None or iswap_installed is not None:
       extended_configuration = copy.deepcopy(extended_configuration)
@@ -126,15 +158,39 @@ class STARChatterboxBackend(STARBackend):
 
     # Mock firmware information for 96-head if installed
     if self.extended_conf.left_x_drive.core_96_head_installed and not skip_core96_head:
+      fw_version = datetime.date(2023, 1, 1)
+      instrument_type: Head96Information.InstrumentType = "FM-STAR"
       self._head96_information = Head96Information(
-        fw_version=datetime.date(2023, 1, 1),
+        fw_version=fw_version,
+        x_offset=365.0,  # factory default; hardware reads the per-machine value from EEPROM (kf)
         supports_clot_monitoring_clld=False,
         stop_disc_type="core_ii",
-        instrument_type="FM-STAR",
+        instrument_type=instrument_type,
         head_type="96 head II",
+        y_range=self._head96_resolve_y_range(fw_version),
+        y_speed_range=self._head96_resolve_y_speed_range(fw_version),
+        z_range=self._head96_resolve_z_range(instrument_type),
+        dispensing_drive_range=self._head96_resolve_dispensing_drive_range(fw_version),
+        dispensing_drive_speed_range=self._head96_resolve_dispensing_drive_speed_range(fw_version),
+        y_drive_speed_default=self._head96_resolve_y_drive_speed_default(fw_version),
+        y_drive_acceleration_default=self._head96_resolve_y_drive_acceleration_default(fw_version),
+        dispensing_drive_acceleration_default=self._head96_resolve_dispensing_drive_acceleration_default(
+          fw_version
+        ),
+        squeezer_drive_speed_default=self._head96_resolve_squeezer_drive_speed_default(fw_version),
+        squeezer_drive_acceleration_default=self._head96_resolve_squeezer_drive_acceleration_default(
+          fw_version
+        ),
       )
     else:
       self._head96_information = None
+
+    # Mock iSWAP setup state if installed. One assignment - constructor override
+    # (if given) takes precedence over the factory-default record.
+    if self.extended_conf.left_x_drive.iswap_installed and not skip_iswap:
+      self._iswap_information = self._sim_iswap_information or _DEFAULT_ISWAP_INFORMATION
+    else:
+      self._iswap_information = None
 
   async def stop(self):
     await LiquidHandlerBackend.stop(self)
@@ -213,6 +269,10 @@ class STARChatterboxBackend(STARBackend):
       )
     return self._channels_minimum_y_spacing[channel_idx]
 
+  async def channels_request_y_minimum_spacing(self) -> List[float]:
+    """Return mock per-channel minimum Y spacings for all channels."""
+    return list(self._channels_minimum_y_spacing)
+
   async def move_channel_y(self, channel: int, y: float):
     print(f"moving channel {channel} to y: {y}")
 
@@ -272,13 +332,31 @@ class STARChatterboxBackend(STARBackend):
   def iswap_parked(self) -> bool:
     return self._iswap_parked is True
 
-  async def move_iswap_x(self, x_position: float):
+  async def move_iswap_x(
+    self,
+    x_position: float,
+    acceleration_level: int = 3,
+    current_protection_limiter: int = 7,
+  ):
     print("moving iswap x to", x_position)
 
-  async def move_iswap_y(self, y_position: float):
+  async def move_iswap_y(
+    self,
+    y_position: float,
+    speed: float = 220.0,
+    acceleration_level: int = 2,
+    current_protection_limiter: int = 7,
+    make_space: bool = False,
+  ):
     print("moving iswap y to", y_position)
 
-  async def move_iswap_z(self, z_position: float):
+  async def move_iswap_z(
+    self,
+    z_position: float,
+    speed: float = 118.0,
+    acceleration: float = 643.66,
+    current_protection_limiter: int = 6,
+  ):
     print("moving iswap z to", z_position)
 
   @asynccontextmanager
@@ -316,3 +394,31 @@ class STARChatterboxBackend(STARBackend):
 
   async def request_pip_height_last_lld(self):
     return list(range(12))
+
+  async def _run_lld_on_channel_batch(
+    self,
+    batch,
+    containers: List[Container],
+    tip_lengths: List[float],
+    z_cavity_bottom: List[float],
+    z_top: List[float],
+    lld_mode: List["STARBackend.LLDMode"],
+    search_speed: float,
+    n_replicates: int,
+  ) -> Dict[int, List[Optional[float]]]:
+    """Simulate LLD by computing absolute heights from each container's volume tracker.
+
+    Empty containers report the cavity-bottom Z (relative height 0). Non-empty
+    containers report ``cavity_bottom + compute_height_from_volume(volume)`` so the
+    parent ``probe_liquid_heights`` can subtract ``z_cavity_bottom`` consistently.
+    """
+    measurements: Dict[int, List[Optional[float]]] = {}
+    for orig_idx in batch.indices:
+      container = containers[orig_idx]
+      volume = container.tracker.get_used_volume()
+      if volume == 0:
+        absolute_height = z_cavity_bottom[orig_idx]
+      else:
+        absolute_height = z_cavity_bottom[orig_idx] + container.compute_height_from_volume(volume)
+      measurements[orig_idx] = [absolute_height] * n_replicates
+    return measurements

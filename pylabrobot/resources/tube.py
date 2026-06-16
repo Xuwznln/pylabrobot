@@ -38,6 +38,7 @@ class Tube(Container):
     compute_volume_from_height: Optional[Callable[[float], float]] = None,
     compute_height_from_volume: Optional[Callable[[float], float]] = None,
     height_volume_data: Optional[Dict[float, float]] = None,
+    no_go_zones=None,
   ):
     """Create a new tube.
 
@@ -67,6 +68,7 @@ class Tube(Container):
       compute_volume_from_height=compute_volume_from_height,
       compute_height_from_volume=compute_height_from_volume,
       height_volume_data=height_volume_data,
+      no_go_zones=no_go_zones,
     )
     self.tracker.register_callback(self._state_updated)
 
@@ -86,7 +88,7 @@ class Tube(Container):
 
     self.tracker.set_volume(volume)
 
-  def set_liquids(self, liquids: List[Tuple[Optional["Liquid"], float]]):
+  def set_liquids(self, liquids: List[Tuple[Optional["Liquid"], float, str]]):
     """Set the liquids in the tube.
 
     Deprecated: use `set_volume` instead. This method will be removed in a future version.

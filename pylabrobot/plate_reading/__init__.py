@@ -30,6 +30,7 @@ from .molecular_devices import (
   MolecularDevicesNVRAMError,
   MolecularDevicesSettings,
   MolecularDevicesSpectraMax384PlusBackend,
+  MolecularDevicesSpectraMaxGeminiEMBackend,
   MolecularDevicesSpectraMaxM5Backend,
   MolecularDevicesUnrecognizedCommandError,
   PmtGain,
@@ -48,3 +49,5 @@ from .standard import (
   ImagingResult,
   Objective,
 )
+from .tecan import ExperimentalTecanInfinite200ProBackend
+from .tecan.spark20m.spark_backend import ExperimentalSparkBackend
