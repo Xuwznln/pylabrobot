@@ -24,14 +24,13 @@ from typing import (
   cast,
 )
 
+from pylabrobot.liquid_handling.channel_positioning import (
+  compute_channel_offsets,
+)
 from pylabrobot.liquid_handling.errors import ChannelizedError
 from pylabrobot.liquid_handling.strictness import (
   Strictness,
   get_strictness,
-)
-from pylabrobot.liquid_handling.utils import (
-  get_tight_single_resource_liquid_op_offsets,
-  get_wide_single_resource_liquid_op_offsets,
 )
 from pylabrobot.machines.machine import Machine, need_setup_finished
 from pylabrobot.plate_reading import PlateReader
@@ -201,18 +200,30 @@ class LiquidHandler(Resource, Machine):
       }
     else:
       arm_state = None
-    return {"head_state": head_state, "head96_state": head96_state, "arm_state": arm_state}
+    return {
+      **super().serialize_state(),
+      "head_state": head_state,
+      "head96_state": head96_state,
+      "arm_state": arm_state,
+    }
 
   def load_state(self, state: Dict[str, Any]):
     """Load the liquid handler state from a file. Use :meth:`~Resource.load_all_state` to load the
     state of the liquid handler and all children (the deck)."""
 
+    super().load_state(state)
     head_state = state["head_state"]
+    if head_state and self.head == {}:
+      # we haven't connected with a backend yet, so we don't know the number of channels.
+      # Let's assume that the state accurately describes the number of channels.
+      self.head = {c: TipTracker(thing=f"Channel {c}") for c in head_state}
     for channel, tracker_state in head_state.items():
       self.head[channel].load_state(tracker_state)
 
     head96_state = state.get("head96_state", {})
-    if head96_state and self.head96:
+    if head96_state:
+      if self.head96 == {}:
+        self.head96 = {c: TipTracker(thing=f"Channel {c}") for c in head96_state}
       for channel, tracker_state in head96_state.items():
         self.head96[channel].load_state(tracker_state)
 
@@ -347,6 +358,20 @@ class LiquidHandler(Resource, Machine):
         logger.debug("Extra arguments to backend.%s: %s", method.__name__, extra)
 
     return extra
+
+  def _compute_spread_offsets(
+    self,
+    resource: Resource,
+    use_channels: List[int],
+    spread: str,
+  ) -> List[Coordinate]:
+    """Compute channel spread offsets for a single-resource multi-channel operation."""
+    return compute_channel_offsets(
+      resource=resource,
+      num_channels=len(use_channels),
+      spread=spread,
+      channel_spacings=self.backend.get_channel_spacings(use_channels),
+    )
 
   def _make_sure_channels_exist(self, channels: List[int]):
     """Checks that the channels exist."""
@@ -768,10 +793,7 @@ class LiquidHandler(Resource, Machine):
       raise RuntimeError("No tips have been picked up and no channels were specified.")
 
     trash = self.deck.get_trash_area()
-    trash_offsets = get_tight_single_resource_liquid_op_offsets(
-      trash,
-      num_channels=n,
-    )
+    trash_offsets = compute_channel_offsets(trash, num_channels=n, spread="tight")
     # add trash_offsets to offsets if defined, otherwise use trash_offsets
     # too advanced for mypy
     offsets = [
@@ -947,18 +969,8 @@ class LiquidHandler(Resource, Machine):
     if len(set(resources)) == 1:
       resource = resources[0]
       resources = [resource] * len(use_channels)
-      if spread == "tight":
-        center_offsets = get_tight_single_resource_liquid_op_offsets(
-          resource=resource, num_channels=len(use_channels)
-        )
-      elif spread == "wide":
-        center_offsets = get_wide_single_resource_liquid_op_offsets(
-          resource=resource, num_channels=len(use_channels)
-        )
-      elif spread == "custom":
-        center_offsets = [Coordinate.zero()] * len(use_channels)
-      else:
-        raise ValueError("Invalid value for 'spread'. Must be 'tight', 'wide', or 'custom'.")
+
+      center_offsets = self._compute_spread_offsets(resource, use_channels, spread)
 
       # add user defined offsets to the computed centers
       offsets = [c + o for c, o in zip(center_offsets, offsets)]
@@ -1130,18 +1142,8 @@ class LiquidHandler(Resource, Machine):
     if len(set(resources)) == 1:
       resource = resources[0]
       resources = [resource] * len(use_channels)
-      if spread == "tight":
-        center_offsets = get_tight_single_resource_liquid_op_offsets(
-          resource=resource, num_channels=len(use_channels)
-        )
-      elif spread == "wide":
-        center_offsets = get_wide_single_resource_liquid_op_offsets(
-          resource=resource, num_channels=len(use_channels)
-        )
-      elif spread == "custom":
-        center_offsets = [Coordinate.zero()] * len(use_channels)
-      else:
-        raise ValueError("Invalid value for 'spread'. Must be 'tight', 'wide', or 'custom'.")
+
+      center_offsets = self._compute_spread_offsets(resource, use_channels, spread)
 
       # add user defined offsets to the computed centers
       offsets = [c + o for c, o in zip(center_offsets, offsets)]
@@ -1900,7 +1902,7 @@ class LiquidHandler(Resource, Machine):
 
       if does_volume_tracking():
         tip.tracker.remove_liquid(volume=volume)
-      elif tip.tracker.get_used_volume() < volume:
+      elif tip.tracker.get_used_volume() <= volume:
         tip.tracker.remove_liquid(volume=min(tip.tracker.get_used_volume(), volume))
 
     if len(containers) == 1:  # single container
