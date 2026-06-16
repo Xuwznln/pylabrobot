@@ -51,7 +51,7 @@ class VolumeTracker(SerializableMixin):
     self,
     thing: str,
     max_volume: float,
-    liquid_history: Optional[List[Tuple[Optional[str], float, ...]]] = None,
+    liquid_history: Optional[List[Tuple[Optional[str], float, str]]] = None,
     unknown_counter: int = 0,
     # Backward compatibility
     liquids: Optional[List[Tuple[Optional[Liquid], float]]] = None,
@@ -209,7 +209,7 @@ class VolumeTracker(SerializableMixin):
     """Enable the volume tracker."""
     self._is_disabled = False
 
-  def set_volume(self, volume: float, name: str = None, unit: str = "ul") -> None:
+  def set_volume(self, volume: float, name: Optional[str] = None, unit: str = "ul") -> None:
     """Set the volume in the container."""
     self.liquids = [(name, volume, unit)]
     self._checkpoint = len(self.liquid_history)
@@ -257,8 +257,9 @@ class VolumeTracker(SerializableMixin):
 
     return removed
 
-  def add_liquid(self, liquid_or_volume=-1, volume: Optional[float] = None,
-                 unit: str = "ul") -> None:
+  def add_liquid(
+    self, liquid_or_volume=-1, volume: Optional[float] = None, unit: str = "ul"
+  ) -> None:
     """Add liquid to the container.
 
     Supports multiple calling conventions:
@@ -323,7 +324,9 @@ class VolumeTracker(SerializableMixin):
       raise TooLittleLiquidError(f"Tracker only has {total_vol}uL")
 
     ratio = top_volume / total_vol if total_vol > 1e-9 else 0
-    return [(name, vol * ratio, unit) for (name, unit), vol in current.items() if vol * ratio > 1e-9]
+    return [
+      (name, vol * ratio, unit) for (name, unit), vol in current.items() if vol * ratio > 1e-9
+    ]
 
   def commit(self) -> None:
     """Commit the pending operations."""
