@@ -114,7 +114,7 @@ class Well(Container):
       "cross_section_type": self.cross_section_type.value,
     }
 
-  def set_volume(self, volume: float, name: str = None, unit: str = "uL"):
+  def set_volume(self, volume: float, name: Optional[str] = None, unit: str = "uL"):
     """Set the volume of the well.
 
     (wraps :meth:`~.VolumeTracker.set_volume`)

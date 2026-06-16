@@ -88,7 +88,7 @@ class Tube(Container):
 
     self.tracker.set_volume(volume)
 
-  def set_liquids(self, liquids: List[Tuple[Optional["Liquid"], float]]):
+  def set_liquids(self, liquids: List[Tuple[Optional["Liquid"], float, str]]):
     """Set the liquids in the tube.
 
     Deprecated: use `set_volume` instead. This method will be removed in a future version.
