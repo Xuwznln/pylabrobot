@@ -962,17 +962,15 @@ class Resource(SerializableMixin):
     for key in [
       "type",
       "parent_name",
+      "location",
     ]:  # delete meta keys
       data_copy.pop(key, None)
-    location_data = data_copy.pop("location", None)
     children_data = data_copy.pop("children", [])
     rotation = data_copy.pop("rotation", None)
     barcode = data_copy.pop("barcode", None)
     preferred_pickup_location = data_copy.pop("preferred_pickup_location", None)
     metadata_data = data_copy.pop("metadata", {})
     resource = subclass(**deserialize(data_copy, allow_marshal=allow_marshal))
-    if location_data is not None:
-      resource.location = cast(Coordinate, deserialize(location_data))
     if rotation is not None:
       resource.rotation = deserialize(rotation)  # not pretty, should be done in init.
     if barcode is not None:

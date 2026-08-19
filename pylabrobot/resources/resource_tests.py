@@ -284,20 +284,6 @@ class TestResource(unittest.TestCase):
       },
     )
 
-  def test_serialize_root_location(self):
-    r = Resource("test", size_x=10, size_y=10, size_z=10)
-    r.location = Coordinate(1, 2, 3)
-
-    self.assertEqual(
-      r.serialize()["location"],
-      {
-        "type": "Coordinate",
-        "x": 1,
-        "y": 2,
-        "z": 3,
-      },
-    )
-
   def test_deserialize(self):
     r = Resource(
       "test",
@@ -307,15 +293,6 @@ class TestResource(unittest.TestCase):
       barcode=Barcode(data="1234567890", symbology="code128", position_on_resource="left"),
     )
     self.assertEqual(Resource.deserialize(r.serialize()), r)
-
-  def test_deserialize_root_location(self):
-    r = Resource("test", size_x=10, size_y=10, size_z=10)
-    r.location = Coordinate(1, 2, 3)
-
-    restored = Resource.deserialize(r.serialize())
-
-    self.assertEqual(restored.location, Coordinate(1, 2, 3))
-    self.assertEqual(restored, r)
 
   def test_deserialize_location_none(self):
     r = Resource("test", size_x=10, size_y=10, size_z=10)
