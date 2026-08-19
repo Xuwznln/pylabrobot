@@ -44,3 +44,36 @@ class TestVolumeTracker(unittest.TestCase):
 
     with self.assertRaises(TooLittleLiquidError):
       tracker.remove_liquid(volume=100)
+
+  def test_liquids_and_substances_are_distinguished(self):
+    tracker = VolumeTracker(thing="test", max_volume=100)
+
+    tracker.add_liquid("water", 20, unit="uL")
+    tracker.add_liquid("salt", 500, unit="uG")
+
+    self.assertEqual(tracker.liquids, [("water", 20, "ul")])
+    self.assertEqual(
+      tracker.substances,
+      [("water", 20, "ul"), ("salt", 500, "ug")],
+    )
+    self.assertEqual(tracker.get_solids(), [("salt", 500, "ug")])
+
+    state = tracker.serialize()
+    self.assertEqual(state["liquids"], [("water", 20, "ul")])
+    self.assertEqual(state["substances"], tracker.substances)
+
+  def test_load_state_prefers_substances_over_legacy_liquids(self):
+    tracker = VolumeTracker(thing="test", max_volume=100)
+
+    tracker.load_state(
+      {
+        "liquids": [("stale", 1, "ul")],
+        "substances": [("water", 20, "ul"), ("salt", 500, "ug")],
+      }
+    )
+
+    self.assertEqual(tracker.liquids, [("water", 20, "ul")])
+    self.assertEqual(
+      tracker.substances,
+      [("water", 20, "ul"), ("salt", 500, "ug")],
+    )
