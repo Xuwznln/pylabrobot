@@ -2,6 +2,7 @@ import json
 import math
 import os
 import urllib.request
+from functools import partial
 from typing import TYPE_CHECKING, Dict, List, Union, cast
 
 try:
@@ -92,14 +93,6 @@ def ot_definition_to_resource(
     items = data["ordering"]
     wells: List[Union[TipSpot, Well, Tube]] = []  # TODO: can we use TypeGuard?
 
-    def volume_from_name(name: str) -> float:
-      # like "Opentrons 96 Filter Tip Rack 200 µL"
-      items = name.split(" ")
-      volume, unit = items[-2], items[-1]
-      if unit == "mL":
-        volume *= 1000
-      return float(volume)
-
     for column in items:
       for item in column:
         well_data = data["wells"][item]
@@ -108,6 +101,8 @@ def ot_definition_to_resource(
           diameter = well_data["diameter"]
           # pythagoras. rounding: good enough?
           well_size_x = well_size_y = round(diameter / math.sqrt(2), 3)
+          if display_category == "tipRack":
+            well_size_x = well_size_y = diameter
         elif "xDimension" in well_data and "yDimension" in well_data:
           well_size_x = well_data["xDimension"]
           well_size_y = well_data["yDimension"]
@@ -140,18 +135,21 @@ def ot_definition_to_resource(
           well.location = location
           wells.append(well)
         elif display_category == "tipRack":
-          # closure
-          def make_tip(name: str) -> Tip:
-            return Tip(
-              total_tip_length=data["parameters"]["tipLength"],
-              has_filter="Filter" in data["metadata"]["displayName"],
-              maximal_volume=volume_from_name(data["metadata"]["displayName"]),
-              fitting_depth=data["parameters"]["tipOverlap"],
-              name=name,
-            )
+          if well_data["shape"] != "circular":
+            raise ValueError("Tip rack wells must define a circular diameter.")
+          # 绑定当前孔的定义，避免闭包在循环后读取最后一个孔的几何。
+          make_tip = partial(
+            Tip,
+            diameter=well_data["diameter"],
+            size_z=data["parameters"]["tipLength"],
+            model=data["parameters"]["loadName"],
+            has_filter="Filter" in data["metadata"]["displayName"],
+            maximal_volume=well_data["totalLiquidVolume"],
+            fitting_depth=data["parameters"]["tipOverlap"],
+          )
 
           tip_spot = TipSpot(
-            name=item,
+            name=f"{name}_{item}",
             size_x=well_size_x,
             size_y=well_size_y,
             make_tip=make_tip,

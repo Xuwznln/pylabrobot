@@ -10,6 +10,33 @@ from pylabrobot.resources.volume_tracker import VolumeTracker
 class TestVolumeTracker(unittest.TestCase):
   """Test for the tip volume tracker"""
 
+  def test_history_checkpoint_survives_state_roundtrip(self):
+    """保存后恢复仍可回滚待提交操作，固体和液体互不影响。"""
+    tracker = VolumeTracker(thing="source", max_volume=100)
+    tracker.set_liquids([("water", 60, "ul"), ("salt", 500, "ug")])
+    tracker.remove_liquid(20)
+    restored = VolumeTracker(thing="restored", max_volume=100)
+    restored.load_state(tracker.serialize())
+    self.assertEqual(restored.get_used_volume(), 40)
+    restored.rollback()
+    self.assertEqual(restored.substances, [("water", 60, "ul"), ("salt", 500, "ug")])
+
+  def test_load_official_pending_state(self):
+    """官方体积状态的待提交差量必须保留，并能回滚到已提交值。"""
+    tracker = VolumeTracker(thing="test", max_volume=100)
+    tracker.load_state({"volume": 60, "pending_volume": 40})
+    self.assertEqual(tracker.get_used_volume(), 40)
+    tracker.rollback()
+    self.assertEqual(tracker.get_used_volume(), 60)
+
+  def test_loading_substances_replaces_existing_state(self):
+    """重复加载同一快照不叠加物料数量。"""
+    tracker = VolumeTracker(thing="test", max_volume=100)
+    state = {"substances": [("water", 20, "ul")]}
+    tracker.load_state(state)
+    tracker.load_state(state)
+    self.assertEqual(tracker.substances, [("water", 20, "ul")])
+
   def test_init(self):
     tracker = VolumeTracker(thing="test", max_volume=100)
     self.assertEqual(tracker.get_free_volume(), 100)
@@ -23,6 +50,9 @@ class TestVolumeTracker(unittest.TestCase):
     """Read-only checks use the pending volume without changing or notifying it."""
     tracker = VolumeTracker(thing="test", max_volume=100, initial_volume=60)
     tracker.remove_liquid(20)
+    # 维护版以历史即时投影 volume；纯校验必须保持这一投影和历史不变。
+    before_volume = tracker.volume
+    before_history = list(tracker.liquid_history)
     calls = []
     tracker.register_callback(lambda: calls.append(tracker.get_used_volume()))
     tracker.validate_remove_liquid(40)
@@ -31,7 +61,8 @@ class TestVolumeTracker(unittest.TestCase):
       tracker.validate_remove_liquid(41)
     with self.assertRaises(TooLittleVolumeError):
       tracker.validate_add_liquid(61)
-    self.assertEqual(tracker.volume, 60)
+    self.assertEqual(tracker.volume, before_volume)
+    self.assertEqual(tracker.liquid_history, before_history)
     self.assertEqual(tracker.get_used_volume(), 40)
     self.assertEqual(calls, [])
 

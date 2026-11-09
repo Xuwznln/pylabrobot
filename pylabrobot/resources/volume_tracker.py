@@ -81,7 +81,7 @@ class VolumeTracker(SerializableMixin):
       self._unknown_counter += 1
       self.liquid_history.append((f"Unknown{self._unknown_counter}", initial_volume, "ul"))
 
-    self._callback: Optional[VolumeTrackerCallback] = None
+    self._callbacks: List[VolumeTrackerCallback] = []
     self._checkpoint: int = len(self.liquid_history)
 
   def _get_liquid_name(self, liquid: Union[Liquid, str, None]) -> str:
@@ -244,16 +244,30 @@ class VolumeTracker(SerializableMixin):
     self.liquids = [(name, volume, unit)]
     self._checkpoint = len(self.liquid_history)
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
 
   def set_liquids(self, liquids: List[Tuple[Optional["Liquid"], float, str]]) -> None:
     """Set the liquids in the container."""
     self.liquids = liquids
     self._checkpoint = len(self.liquid_history)
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
+
+  def validate_remove_liquid(self, volume: float) -> None:
+    """只校验液体余量，不修改固液历史或触发回调。"""
+    if volume - self.get_used_volume() > 1e-6:
+      raise TooLittleLiquidError(
+        f"Not enough liquid in container: {volume}uL > {self.get_used_volume()}uL."
+      )
+
+  def validate_add_liquid(self, volume: float) -> None:
+    """只校验液体容量，不修改固液历史或触发回调。"""
+    if volume - self.get_free_volume() > 1e-6:
+      raise TooLittleVolumeError(
+        f"Not enough space in container: {volume}uL > {self.get_free_volume()}uL."
+      )
 
   def remove_liquid(self, volume: float) -> List[Tuple[str, float, str]]:
     """Remove liquid from the container proportionally.
@@ -283,8 +297,8 @@ class VolumeTracker(SerializableMixin):
 
     self.liquid_history.append((None, -volume, "ul"))
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
 
     return removed
 
@@ -326,8 +340,8 @@ class VolumeTracker(SerializableMixin):
     name = self._get_liquid_name(actual_liquid)
     self.liquid_history.append((name, actual_volume, norm_unit))
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
 
   def get_used_volume(self) -> float:
     """Get the used volume of the container."""
@@ -383,14 +397,16 @@ class VolumeTracker(SerializableMixin):
       raise RuntimeError(f"Volume tracker {self.thing} is disabled. Call `enable()`.")
     self._checkpoint = len(self.liquid_history)
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
 
   def rollback(self) -> None:
     """Rollback operations since the last commit."""
     if self.is_disabled:
       raise RuntimeError("Volume tracker is disabled. Call `enable()`.")
     self.liquid_history = self.liquid_history[: self._checkpoint]
+    for callback in self._callbacks:
+      callback()
 
   def clear_liquid_history(self) -> None:
     """Clears the liquid history. Use when there is a wash step."""
@@ -408,6 +424,7 @@ class VolumeTracker(SerializableMixin):
       "liquids": self.liquids,
       "substances": self.substances,
       "liquid_history": self.liquid_history,
+      "history_checkpoint": self._checkpoint,
       "unknown_counter": self._unknown_counter,
     }
 
@@ -430,6 +447,7 @@ class VolumeTracker(SerializableMixin):
         else:
           self.liquid_history.append((data, 0, "ul"))
     elif "substances" in state or "liquids" in state:
+      self.liquid_history = []
       # 新状态用 ``substances`` 表示全部内容物；``liquids`` 兼容尚未区分固体的旧状态。
       for item in state.get("substances", state.get("liquids", [])):
         if isinstance(item, (list, tuple)):
@@ -445,10 +463,24 @@ class VolumeTracker(SerializableMixin):
           name = self._get_liquid_name(liq)
           self.liquid_history.append((name, vol, unit))
     elif "volume" in state:
+      self.liquid_history = []
       vol = deserialize(state["volume"])
       if vol > 0:
         self._unknown_counter += 1
         self.liquid_history.append((f"Unknown{self._unknown_counter}", vol, "ul"))
 
+    if any(key in state for key in ("liquid_history", "substances", "liquids", "volume")):
+      checkpoint = state.get("history_checkpoint", len(self.liquid_history))
+      if type(checkpoint) is not int or not 0 <= checkpoint <= len(self.liquid_history):
+        raise ValueError("Invalid liquid history checkpoint.")
+      self._checkpoint = checkpoint
+      # 官方状态区分已提交和待提交体积；先记提交点，再重放待提交差量。
+      if "pending_volume" in state and not any(
+        key in state for key in ("liquid_history", "substances", "liquids")
+      ):
+        self.pending_volume = deserialize(state["pending_volume"])
+
   def register_callback(self, callback: VolumeTrackerCallback) -> None:
-    self._callback = callback
+    """订阅内容物变更，同一个回调只登记一次。"""
+    if callback not in self._callbacks:
+      self._callbacks.append(callback)
