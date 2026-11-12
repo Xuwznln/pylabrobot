@@ -14,5 +14,5 @@ myenv
 env/*
 .venv
 .env
-
+dist/*
 .idea

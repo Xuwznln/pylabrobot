@@ -1,14 +1,15 @@
-from .backend import LiquidHandlerBackend
+import warnings
+
+warnings.warn(
+  "Importing from pylabrobot.liquid_handling.backends is deprecated. "
+  "Use pylabrobot.legacy.liquid_handling.backends instead.",
+  DeprecationWarning,
+  stacklevel=2,
+)
+
+from pylabrobot.legacy.liquid_handling.backends import *  # noqa: F401,F403,E402
 
 try:
-  from .rviz_backend import LiquidHandlerRvizBackend
+  from .rviz_backend import LiquidHandlerRvizBackend  # noqa: E402
 except ImportError:
   pass
-from .chatterbox import LiquidHandlerChatterboxBackend
-from .chatterbox_backend import ChatterBoxBackend
-from .hamilton.STAR_backend import STAR, STARBackend
-from .hamilton.vantage_backend import Vantage, VantageBackend
-from .opentrons_backend import OpentronsOT2Backend
-from .opentrons_simulator import OpentronsOT2Simulator
-from .serializing_backend import SerializingBackend
-from .tecan.EVO_backend import EVO, EVOBackend

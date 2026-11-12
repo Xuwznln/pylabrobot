@@ -12,6 +12,10 @@ from pylabrobot.serializer import SerializableMixin, deserialize, serialize
 this = sys.modules[__name__]
 this.volume_tracking_enabled = False  # type: ignore
 
+# 单位分池：质量单位（固体）与体积单位（液体）互不混算。
+# volume 只统计体积单位、mass 只统计质量单位；按比例移除、容量校验也各自分池。
+MASS_UNITS = frozenset({"ug", "mg", "g"})
+
 
 def set_volume_tracking(enabled: bool):
   this.volume_tracking_enabled = enabled  # type: ignore
@@ -25,8 +29,10 @@ def does_volume_tracking() -> bool:
 def no_volume_tracking():
   old_value = this.volume_tracking_enabled
   this.volume_tracking_enabled = False  # type: ignore
-  yield
-  this.volume_tracking_enabled = old_value  # type: ignore
+  try:
+    yield
+  finally:
+    this.volume_tracking_enabled = old_value  # type: ignore
 
 
 VolumeTrackerCallback = Callable[[], None]
@@ -75,7 +81,7 @@ class VolumeTracker(SerializableMixin):
       self._unknown_counter += 1
       self.liquid_history.append((f"Unknown{self._unknown_counter}", initial_volume, "ul"))
 
-    self._callback: Optional[VolumeTrackerCallback] = None
+    self._callbacks: List[VolumeTrackerCallback] = []
     self._checkpoint: int = len(self.liquid_history)
 
   def _get_liquid_name(self, liquid: Union[Liquid, str, None]) -> str:
@@ -91,6 +97,11 @@ class VolumeTracker(SerializableMixin):
   def _normalize_unit(unit: str) -> str:
     """统一单位大小写：uL→ul, mL→ml, uG→ug 等。"""
     return unit.lower() if unit else "ul"
+
+  @staticmethod
+  def _is_mass_unit(unit: str) -> bool:
+    """单位是否为质量（固体）。质量与体积分池：volume 只算液体、mass 只算固体。"""
+    return VolumeTracker._normalize_unit(unit) in MASS_UNITS
 
   @staticmethod
   def _unpack_entry(entry) -> Tuple[Optional[str], float, str]:
@@ -123,11 +134,14 @@ class VolumeTracker(SerializableMixin):
           key = (name, unit)
           liquids[key] = liquids.get(key, 0) + vol
       elif vol < 0 and name is None:
+        # 按比例移除仅在同单位池内进行（体积扣体积、质量扣质量），
+        # 避免「移除液体」把固体也一起按比例扣减。
         remove_vol = -vol
-        total_vol = sum(liquids.values())
+        same_unit_keys = [k for k in liquids if k[1] == unit]
+        total_vol = sum(liquids[k] for k in same_unit_keys)
         if total_vol > 1e-9:
           ratio = min(remove_vol / total_vol, 1.0)
-          for k in list(liquids.keys()):
+          for k in same_unit_keys:
             liquids[k] -= liquids[k] * ratio
             if liquids[k] < 1e-9:
               del liquids[k]
@@ -141,19 +155,32 @@ class VolumeTracker(SerializableMixin):
     return liquids
 
   @property
+  def substances(self) -> List[Tuple[str, float, str]]:
+    """返回所有当前物料，格式为 ``(名称, 数量, 单位)``。
+
+    与 :attr:`liquids` 不同，此属性同时包含按体积记录的液体和按质量记录的固体。
+    """
+    return [(name, amount, unit) for (name, unit), amount in self.current_liquids.items()]
+
+  @property
   def liquids(self) -> List[Tuple[str, float, str]]:
-    """Get current liquids as a list of (liquid_name, volume, unit) tuples."""
-    return [(name, vol, unit) for (name, unit), vol in self.current_liquids.items()]
+    """返回当前液体，格式为 ``(名称, 体积, 单位)``，不包含固体。"""
+    return [
+      (name, volume, unit)
+      for (name, unit), volume in self.current_liquids.items()
+      if not self._is_mass_unit(unit)
+    ]
 
   @liquids.setter
   def liquids(self, value: List[Tuple]) -> None:
-    """Set liquids by clearing history and adding new liquids.
+    """Set contents by clearing current ones and adding new ones.
 
     Accepts (liquid, volume) or (liquid, volume, unit) tuples.
+    “设置”为替换语义：先按 (名称,单位) 精确清空当前全部内容（液体池+固体池），再写入新内容。
     """
-    current_vol = self.volume
-    if current_vol > 1e-9:
-      self.liquid_history.append((None, -current_vol, "ul"))
+    for (name, unit), vol in list(self.current_liquids.items()):
+      if vol > 1e-9:
+        self.liquid_history.append((name, -vol, unit))
     for item in value:
       liq, vol = item[0], item[1]
       unit = self._normalize_unit(item[2]) if len(item) >= 3 else "ul"
@@ -163,8 +190,13 @@ class VolumeTracker(SerializableMixin):
 
   @property
   def volume(self) -> float:
-    """Get the current volume (sum of all liquids)."""
-    return sum(self.current_liquids.values())
+    """当前体积：仅统计液体（体积单位，如 ul）。固体（质量/ug）见 ``mass``，两者分池互不混算。"""
+    return sum(v for (_n, unit), v in self.current_liquids.items() if not self._is_mass_unit(unit))
+
+  @property
+  def mass(self) -> float:
+    """当前质量：仅统计固体（质量单位，如 ug）。液体（体积/ul）见 ``volume``，两者分池互不混算。"""
+    return sum(v for (_n, unit), v in self.current_liquids.items() if self._is_mass_unit(unit))
 
   @volume.setter
   def volume(self, value: float) -> None:
@@ -212,16 +244,30 @@ class VolumeTracker(SerializableMixin):
     self.liquids = [(name, volume, unit)]
     self._checkpoint = len(self.liquid_history)
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
 
   def set_liquids(self, liquids: List[Tuple[Optional["Liquid"], float, str]]) -> None:
     """Set the liquids in the container."""
     self.liquids = liquids
     self._checkpoint = len(self.liquid_history)
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
+
+  def validate_remove_liquid(self, volume: float) -> None:
+    """只校验液体余量，不修改固液历史或触发回调。"""
+    if volume - self.get_used_volume() > 1e-6:
+      raise TooLittleLiquidError(
+        f"Not enough liquid in container: {volume}uL > {self.get_used_volume()}uL."
+      )
+
+  def validate_add_liquid(self, volume: float) -> None:
+    """只校验液体容量，不修改固液历史或触发回调。"""
+    if volume - self.get_free_volume() > 1e-6:
+      raise TooLittleVolumeError(
+        f"Not enough space in container: {volume}uL > {self.get_free_volume()}uL."
+      )
 
   def remove_liquid(self, volume: float) -> List[Tuple[str, float, str]]:
     """Remove liquid from the container proportionally.
@@ -238,7 +284,8 @@ class VolumeTracker(SerializableMixin):
         f"Container {self.thing} has too little liquid: {volume}uL > {available_volume}uL."
       )
 
-    current = self.current_liquids
+    # 仅在液体池内按比例移除（固体不参与体积吸取）；下面的 (None,-volume,"ul") 也只扣液体池
+    current = {k: v for k, v in self.current_liquids.items() if not self._is_mass_unit(k[1])}
     total_vol = sum(current.values())
     removed: List[Tuple[str, float, str]] = []
     if total_vol > 1e-9:
@@ -250,8 +297,8 @@ class VolumeTracker(SerializableMixin):
 
     self.liquid_history.append((None, -volume, "ul"))
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
 
     return removed
 
@@ -283,16 +330,18 @@ class VolumeTracker(SerializableMixin):
       actual_liquid = liquid_or_volume  # type: ignore[assignment]
       actual_volume = volume
 
-    if (actual_volume - self.get_free_volume()) > 1e-6:
+    # 固体（质量单位）不占用液体体积容量，跳过体积超容检查
+    norm_unit = self._normalize_unit(unit)
+    if not self._is_mass_unit(norm_unit) and (actual_volume - self.get_free_volume()) > 1e-6:
       raise TooLittleVolumeError(
         f"Container {self.thing} has too little volume: {actual_volume}uL > {self.get_free_volume()}uL."
       )
 
     name = self._get_liquid_name(actual_liquid)
-    self.liquid_history.append((name, actual_volume, self._normalize_unit(unit)))
+    self.liquid_history.append((name, actual_volume, norm_unit))
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
 
   def get_used_volume(self) -> float:
     """Get the used volume of the container."""
@@ -303,7 +352,9 @@ class VolumeTracker(SerializableMixin):
     return self.max_volume - self.get_used_volume()
 
   def get_liquids(self, top_volume: Optional[float] = None) -> List[Tuple[str, float, str]]:
-    """Get the current liquids in the container.
+    """Get the current liquids (液体池, 体积单位) in the container.
+
+    固体（质量/ug）不在此返回，见 ``get_solids``。
 
     Args:
         top_volume: If specified, get only the top N uL (proportionally).
@@ -312,7 +363,7 @@ class VolumeTracker(SerializableMixin):
     Returns:
         List of (liquid_name, volume, unit) tuples.
     """
-    current = self.current_liquids
+    current = {k: v for k, v in self.current_liquids.items() if not self._is_mass_unit(k[1])}
     total_vol = sum(current.values())
 
     if top_volume is None or top_volume >= total_vol:
@@ -326,18 +377,36 @@ class VolumeTracker(SerializableMixin):
       (name, vol * ratio, unit) for (name, unit), vol in current.items() if vol * ratio > 1e-9
     ]
 
+  def get_solids(self) -> List[Tuple[str, float, str]]:
+    """Get the current solids (固体池, 质量单位 如 ug) in the container.
+
+    液体（体积/ul）见 ``get_liquids``。
+
+    Returns:
+        List of (solid_name, mass, unit) tuples.
+    """
+    return [
+      (name, mass, unit)
+      for (name, unit), mass in self.current_liquids.items()
+      if self._is_mass_unit(unit)
+    ]
+
   def commit(self) -> None:
     """Commit the pending operations."""
-    assert not self.is_disabled, f"Volume tracker {self.thing} is disabled. Call `enable()`."
+    if self.is_disabled:
+      raise RuntimeError(f"Volume tracker {self.thing} is disabled. Call `enable()`.")
     self._checkpoint = len(self.liquid_history)
 
-    if self._callback is not None:
-      self._callback()
+    for callback in self._callbacks:
+      callback()
 
   def rollback(self) -> None:
     """Rollback operations since the last commit."""
-    assert not self.is_disabled, "Volume tracker is disabled. Call `enable()`."
+    if self.is_disabled:
+      raise RuntimeError("Volume tracker is disabled. Call `enable()`.")
     self.liquid_history = self.liquid_history[: self._checkpoint]
+    for callback in self._callbacks:
+      callback()
 
   def clear_liquid_history(self) -> None:
     """Clears the liquid history. Use when there is a wash step."""
@@ -351,8 +420,11 @@ class VolumeTracker(SerializableMixin):
       "thing": self.thing,
       "max_volume": serialize(self.max_volume),
       "volume": self.volume,
+      "mass": self.mass,
       "liquids": self.liquids,
+      "substances": self.substances,
       "liquid_history": self.liquid_history,
+      "history_checkpoint": self._checkpoint,
       "unknown_counter": self._unknown_counter,
     }
 
@@ -374,8 +446,10 @@ class VolumeTracker(SerializableMixin):
           self.liquid_history.append((name, vol, unit))
         else:
           self.liquid_history.append((data, 0, "ul"))
-    elif "liquids" in state:
-      for item in state["liquids"]:
+    elif "substances" in state or "liquids" in state:
+      self.liquid_history = []
+      # 新状态用 ``substances`` 表示全部内容物；``liquids`` 兼容尚未区分固体的旧状态。
+      for item in state.get("substances", state.get("liquids", [])):
         if isinstance(item, (list, tuple)):
           liq = item[0]
           vol = float(item[1]) if len(item) > 1 else 0
@@ -389,10 +463,24 @@ class VolumeTracker(SerializableMixin):
           name = self._get_liquid_name(liq)
           self.liquid_history.append((name, vol, unit))
     elif "volume" in state:
+      self.liquid_history = []
       vol = deserialize(state["volume"])
       if vol > 0:
         self._unknown_counter += 1
         self.liquid_history.append((f"Unknown{self._unknown_counter}", vol, "ul"))
 
+    if any(key in state for key in ("liquid_history", "substances", "liquids", "volume")):
+      checkpoint = state.get("history_checkpoint", len(self.liquid_history))
+      if type(checkpoint) is not int or not 0 <= checkpoint <= len(self.liquid_history):
+        raise ValueError("Invalid liquid history checkpoint.")
+      self._checkpoint = checkpoint
+      # 官方状态区分已提交和待提交体积；先记提交点，再重放待提交差量。
+      if "pending_volume" in state and not any(
+        key in state for key in ("liquid_history", "substances", "liquids")
+      ):
+        self.pending_volume = deserialize(state["pending_volume"])
+
   def register_callback(self, callback: VolumeTrackerCallback) -> None:
-    self._callback = callback
+    """订阅内容物变更，同一个回调只登记一次。"""
+    if callback not in self._callbacks:
+      self._callbacks.append(callback)
