@@ -1,0 +1,6 @@
+pylabrobot.resources.volume\_tracker.VolumeTracker.mass
+=======================================================
+
+.. currentmodule:: pylabrobot.resources.volume_tracker
+
+.. autoproperty:: VolumeTracker.mass
